@@ -1,0 +1,79 @@
+{
+  "_leeme": "Este archivo es una base de conocimiento para el asistente de IA (Claude). Guarda aquí rutas, ubicaciones de archivos de prueba, y procesos que el asistente necesita recordar entre conversaciones, para no tener que repetírselo cada vez. Se edita a mano, agregando entradas nuevas cuando haga falta.",
+
+  "archivos_de_prueba": {
+    "constancias_sunat_reales": {
+      "descripcion": "PDFs reales de constancias SUNAT (0601 Planilla, 0621 IGV-Renta) ya descargados, usados para probar extracción de datos",
+      "ruta": "erp-backend/uploads/constancias"
+    }
+  },
+
+  "servicios_clave": {
+    "extraccion_pdf_sin_ia": {
+      "descripcion": "Extrae Período, RUC, Razón Social y tabla de Tributos de una constancia PDF usando pdf-parse (sin IA, sin guardar en BD)",
+      "ruta": "erp-backend/apps/api/src/vencimientos/declaraciones/constancias-extraccion.service.ts"
+    },
+    "controller_constancias": {
+      "descripcion": "Endpoints de subir/extraer constancias PDF",
+      "ruta": "erp-backend/apps/api/src/vencimientos/declaraciones/constancias.controller.ts"
+    },
+    "scraper_sunat_playwright": {
+      "descripcion": "Robot (Playwright) que hace login en sunat.gob.pe con Clave SOL y descarga automáticamente la constancia de una declaración presentada. Selectores hardcodeados contra el diseño actual del portal SUNAT — se rompe si SUNAT cambia su página.",
+      "ruta": "erp-backend/apps/api/src/vencimientos/fase2/sunat-scraping.client.ts"
+    },
+    "asistente_ia_base": {
+      "descripcion": "Servicio base compartido para los asistentes de IA (Claude API) del módulo Fase 3 — resumen diario, detección de inconsistencias, redacción de correo",
+      "ruta": "erp-backend/apps/api/src/vencimientos/fase3/ia/asistente-ia-base.service.ts"
+    }
+  },
+
+  "navegacion_sunat_manual": {
+    "_nota": "Pasos para que una PERSONA navegue sunat.gob.pe a mano (no el robot) y llegue a la constancia de un formulario. Reconstruido de los selectores/comentarios verificados en vivo dentro de sunat-scraping.client.ts. Un solo recorrido, se separa por código de formulario solo en el paso 6 (el resto es idéntico para ambos).",
+    "0621": {
+      "nombre": "IGV - Renta Mensual (PDT 621)",
+      "pasos": [
+        "1. Entrar a https://www.sunat.gob.pe/sol.html",
+        "2. Clic en 'Mis Declaraciones y Pagos' (abre una ventana nueva)",
+        "3. En la ventana nueva, clic en 'Ingresar por RUC'",
+        "4. Llenar RUC + Usuario SOL + Clave SOL, clic en 'Iniciar sesión'",
+        "5. Ya logueado, ir al menú: Consultas → Consultas de Presentación y Pago → Consulta de Declaraciones y Pagos",
+        "6. En 'Número de Formulario' elegir 0621 (IGV - Renta)",
+        "7. Elegir el Período Tributario (mes y año) — mismo mes en 'inicio' y en 'fin' para un solo periodo",
+        "8. Clic en 'Buscar'",
+        "9. En la fila de resultado, clic en 'Ver Constancia' (abre un modal)",
+        "10. Dentro del modal, clic en 'Guardar' — ahí sí descarga el PDF"
+      ]
+    },
+    "0601": {
+      "nombre": "Planilla Electrónica / PLAME (PDT 601)",
+      "pasos": [
+        "1. Entrar a https://www.sunat.gob.pe/sol.html",
+        "2. Clic en 'Mis Declaraciones y Pagos' (abre una ventana nueva)",
+        "3. En la ventana nueva, clic en 'Ingresar por RUC'",
+        "4. Llenar RUC + Usuario SOL + Clave SOL, clic en 'Iniciar sesión'",
+        "5. Ya logueado, ir al menú: Consultas → Consultas de Presentación y Pago → Consulta de Declaraciones y Pagos",
+        "6. En 'Número de Formulario' elegir 0601 (Planilla)",
+        "7. Elegir el Período Tributario (mes y año) — mismo mes en 'inicio' y en 'fin' para un solo periodo",
+        "8. Clic en 'Buscar'",
+        "9. En la fila de resultado, clic en 'Ver Constancia' (abre un modal)",
+        "10. Dentro del modal, clic en 'Guardar' — ahí sí descarga el PDF"
+      ]
+    }
+  },
+
+  "infraestructura": {
+    "logs_backend": {
+      "descripcion": "Logs de Winston (error y combinado, por día) — revisar aquí primero cuando un endpoint da 500 genérico",
+      "ruta": "erp-backend/logs"
+    },
+    "carpeta_uploads_estatica": {
+      "descripcion": "Carpeta servida como estática por el backend (useStaticAssets en main.ts), prefijo /uploads/",
+      "ruta": "erp-backend/uploads"
+    }
+  },
+
+  "notas_operativas": [
+    "Reiniciar el backend (npm run start:dev) completo después de instalar una dependencia nueva con npm install — el modo --watch no siempre la recoge en caliente.",
+    "pdf-parse v2 usa la clase PDFParse con métodos getText()/getTable() — NUNCA llamarlos con Promise.all en paralelo sobre la misma instancia, corrompe el resultado silenciosamente (confirmado). Llamarlos uno después del otro."
+  ]
+}
