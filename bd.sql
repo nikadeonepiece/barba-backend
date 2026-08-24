@@ -15,7 +15,7 @@
 -- migraciones sueltas en bd/ (las de casilla SUNAFIL, estado_pago y buzón SUNAT se
 -- consolidaron acá y se borraron): estaban duplicadas y la de estado_pago había
 -- quedado DESACTUALIZADA respecto de los stored procedures de este archivo — correrla
--- habría revertido el manejo de AFP_NET en declaracion_control y la preservación de
+-- habría revertido el manejo de AFP_NET en declaracion_listar_periodo y la preservación de
 -- estado_pago = PAGADO en declaracion_marcar_error.
 --
 -- Para aplicar un módulo sobre una base YA cargada, copiar de acá el bloque de ese
@@ -750,7 +750,7 @@ DELIMITER ;
 -- ---------- Stored procedures: declaracion (semáforo) ----------
 
 DELIMITER ;;
-CREATE PROCEDURE `declaracion_control`(IN p_periodo_anio SMALLINT, IN p_periodo_mes TINYINT)
+CREATE PROCEDURE `declaracion_listar_periodo`(IN p_periodo_anio SMALLINT, IN p_periodo_mes TINYINT)
 BEGIN
     -- Vista principal del módulo: por empresa, qué obligaciones tiene ese periodo,
     -- cruzando con el cronograma (según su dígito de RUC) y lo declarado hasta ahora.

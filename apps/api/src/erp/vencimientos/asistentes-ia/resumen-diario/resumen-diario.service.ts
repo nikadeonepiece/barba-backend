@@ -31,7 +31,7 @@ export class ResumenDiarioService {
   ) {}
 
   async generar(periodoAnio: number, periodoMes: number, userId: number) {
-    const [filas]: [FilaControlDeclaracion[]] = await this.dataSource.query(`CALL declaracion_control(?, ?)`, [periodoAnio, periodoMes]);
+    const [filas]: [FilaControlDeclaracion[]] = await this.dataSource.query(`CALL declaracion_listar_periodo(?, ?)`, [periodoAnio, periodoMes]);
 
     const pendientes = filas.filter((f) => f.alerta_declaracion === 'PENDIENTE');
     const vencidos = filas.filter((f) => f.alerta_declaracion === 'VENCIDO');

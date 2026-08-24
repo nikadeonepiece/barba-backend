@@ -29,7 +29,7 @@ export class DeclaracionesService {
   // `tipos`, si viene, filtra las filas por tipo_obligacion — así el mismo SP alimenta
   // tanto la vista tributaria (IGV_RENTA/RCE_RVIE_SIRE) como la laboral (PLANILLA).
   async control(anio: number, mes: number, tipos?: string[]) {
-    const [data] = await this.dataSource.query(`CALL declaracion_control(?, ?)`, [anio, mes]);
+    const [data] = await this.dataSource.query(`CALL declaracion_listar_periodo(?, ?)`, [anio, mes]);
     const filtrado = tipos ? data.filter((fila: any) => tipos.includes(fila.tipo_obligacion)) : data;
     return { success: true, data: filtrado };
   }
