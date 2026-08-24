@@ -22,8 +22,8 @@ export class DeclaracionesController {
 
   @RequirePermissions('VENCIMIENTOS_TRIBUTARIO', 'ver_vencimiento_tributario')
   @Get('control-declaraciones')
-  semaforo(@Query('anio', ParseIntPipe) anio: number, @Query('mes', ParseIntPipe) mes: number) {
-    return this.declaracionesService.semaforo(anio, mes, TIPOS_TRIBUTARIO);
+  control(@Query('anio', ParseIntPipe) anio: number, @Query('mes', ParseIntPipe) mes: number) {
+    return this.declaracionesService.control(anio, mes, TIPOS_TRIBUTARIO);
   }
 
   @RequirePermissions('VENCIMIENTOS_TRIBUTARIO', 'marcar_declaracion')
@@ -37,38 +37,38 @@ export class DeclaracionesController {
 
   @RequirePermissions('VENCIMIENTOS_LABORAL', 'ver_vencimiento_laboral')
   @Get('laboral/control-declaraciones')
-  semaforoLaboral(@Query('anio', ParseIntPipe) anio: number, @Query('mes', ParseIntPipe) mes: number) {
-    return this.declaracionesService.semaforo(anio, mes, TIPOS_LABORAL);
+  controlLaboral(@Query('anio', ParseIntPipe) anio: number, @Query('mes', ParseIntPipe) mes: number) {
+    return this.declaracionesService.control(anio, mes, TIPOS_LABORAL);
   }
 
   @RequirePermissions('VENCIMIENTOS_TRIBUTARIO', 'exportar_pdf_vencimientos')
   @Get('control-declaraciones/pdf')
-  async semaforoPdf(
+  async controlPdf(
     @Query('anio', ParseIntPipe) anio: number,
     @Query('mes', ParseIntPipe) mes: number,
     @Query('id_empresa') idEmpresa: string | undefined,
-    @Query('estado_semaforo') estadoSemaforo: string | undefined,
+    @Query('alerta_declaracion') alertaDeclaracion: string | undefined,
     @Res() res: Response,
   ) {
-    await this.declaracionesService.semaforoPdf(
+    await this.declaracionesService.controlPdf(
       anio, mes, TIPOS_TRIBUTARIO,
-      { idEmpresa: idEmpresa ? Number(idEmpresa) : undefined, estadoSemaforo: estadoSemaforo || undefined },
+      { idEmpresa: idEmpresa ? Number(idEmpresa) : undefined, alertaDeclaracion: alertaDeclaracion || undefined },
       'Tributario', res,
     );
   }
 
   @RequirePermissions('VENCIMIENTOS_LABORAL', 'exportar_pdf_vencimientos_laboral')
   @Get('laboral/control-declaraciones/pdf')
-  async semaforoPdfLaboral(
+  async controlPdfLaboral(
     @Query('anio', ParseIntPipe) anio: number,
     @Query('mes', ParseIntPipe) mes: number,
     @Query('id_empresa') idEmpresa: string | undefined,
-    @Query('estado_semaforo') estadoSemaforo: string | undefined,
+    @Query('alerta_declaracion') alertaDeclaracion: string | undefined,
     @Res() res: Response,
   ) {
-    await this.declaracionesService.semaforoPdf(
+    await this.declaracionesService.controlPdf(
       anio, mes, TIPOS_LABORAL,
-      { idEmpresa: idEmpresa ? Number(idEmpresa) : undefined, estadoSemaforo: estadoSemaforo || undefined },
+      { idEmpresa: idEmpresa ? Number(idEmpresa) : undefined, alertaDeclaracion: alertaDeclaracion || undefined },
       'Laboral', res,
     );
   }

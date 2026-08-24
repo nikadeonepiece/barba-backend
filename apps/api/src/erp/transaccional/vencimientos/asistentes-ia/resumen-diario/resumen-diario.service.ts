@@ -3,10 +3,10 @@ import { DataSource } from 'typeorm';
 import { InjectDataSource } from '@nestjs/typeorm';
 import { AsistenteIaBaseService } from '../base/asistente-ia-base.service';
 
-interface FilaSemaforo {
+interface FilaControlDeclaracion {
   razon_social: string;
   tipo_obligacion: string;
-  estado_semaforo: 'A_TIEMPO' | 'PENDIENTE' | 'TARDE' | 'VENCIDO';
+  alerta_declaracion: 'A_TIEMPO' | 'PENDIENTE' | 'TARDE' | 'VENCIDO';
   mensaje_error: string | null;
 }
 
@@ -31,12 +31,12 @@ export class ResumenDiarioService {
   ) {}
 
   async generar(periodoAnio: number, periodoMes: number, userId: number) {
-    const [filas]: [FilaSemaforo[]] = await this.dataSource.query(`CALL declaracion_semaforo(?, ?)`, [periodoAnio, periodoMes]);
+    const [filas]: [FilaControlDeclaracion[]] = await this.dataSource.query(`CALL declaracion_control(?, ?)`, [periodoAnio, periodoMes]);
 
-    const pendientes = filas.filter((f) => f.estado_semaforo === 'PENDIENTE');
-    const vencidos = filas.filter((f) => f.estado_semaforo === 'VENCIDO');
+    const pendientes = filas.filter((f) => f.alerta_declaracion === 'PENDIENTE');
+    const vencidos = filas.filter((f) => f.alerta_declaracion === 'VENCIDO');
     const conError = filas.filter((f) => f.mensaje_error);
-    const aTiempo = filas.filter((f) => f.estado_semaforo === 'A_TIEMPO');
+    const aTiempo = filas.filter((f) => f.alerta_declaracion === 'A_TIEMPO');
 
     const resumenEstructurado = {
       periodo: `${periodoMes}/${periodoAnio}`,

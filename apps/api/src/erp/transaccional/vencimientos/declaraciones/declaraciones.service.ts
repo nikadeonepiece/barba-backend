@@ -28,28 +28,28 @@ export class DeclaracionesService {
   // ---------- Semáforo (vista principal del módulo) ----------
   // `tipos`, si viene, filtra las filas por tipo_obligacion — así el mismo SP alimenta
   // tanto la vista tributaria (IGV_RENTA/RCE_RVIE_SIRE) como la laboral (PLANILLA).
-  async semaforo(anio: number, mes: number, tipos?: string[]) {
-    const [data] = await this.dataSource.query(`CALL declaracion_semaforo(?, ?)`, [anio, mes]);
+  async control(anio: number, mes: number, tipos?: string[]) {
+    const [data] = await this.dataSource.query(`CALL declaracion_control(?, ?)`, [anio, mes]);
     const filtrado = tipos ? data.filter((fila: any) => tipos.includes(fila.tipo_obligacion)) : data;
     return { success: true, data: filtrado };
   }
 
   // ---------- Reporte PDF del semáforo ----------
-  // Reutiliza `semaforo()` y aplica los mismos filtros que el usuario tiene activos en pantalla
-  // (id_empresa/estado_semaforo) — el PDF exportado siempre coincide con lo que se ve en la tabla,
+  // Reutiliza `control()` y aplica los mismos filtros que el usuario tiene activos en pantalla
+  // (id_empresa/alerta_declaracion) — el PDF exportado siempre coincide con lo que se ve en la tabla,
   // nunca con el dataset completo del periodo sin filtrar.
-  async semaforoPdf(
+  async controlPdf(
     anio: number,
     mes: number,
     tipos: string[] | undefined,
-    filtros: { idEmpresa?: number; estadoSemaforo?: string },
+    filtros: { idEmpresa?: number; alertaDeclaracion?: string },
     tituloArea: string,
     res: Response,
   ) {
-    const { data } = await this.semaforo(anio, mes, tipos);
+    const { data } = await this.control(anio, mes, tipos);
     const filas = data.filter((fila: any) => {
       if (filtros.idEmpresa && Number(fila.id_empresa) !== filtros.idEmpresa) return false;
-      if (filtros.estadoSemaforo && fila.estado_semaforo !== filtros.estadoSemaforo) return false;
+      if (filtros.alertaDeclaracion && fila.alerta_declaracion !== filtros.alertaDeclaracion) return false;
       return true;
     });
 
@@ -74,9 +74,9 @@ export class DeclaracionesService {
         { text: fila.razon_social ?? '', fontSize: 8.5 },
         { text: TIPO_LABEL[fila.tipo_obligacion] ?? fila.tipo_obligacion, fontSize: 8.5 },
         { text: fila.fecha_limite ? new Date(fila.fecha_limite).toLocaleDateString('es-PE') : '', fontSize: 8.5 },
-        { text: fila.estado_semaforo ?? '', fontSize: 8.5 },
+        { text: fila.alerta_declaracion ?? '', fontSize: 8.5 },
         { text: fila.fecha_declaracion ? new Date(fila.fecha_declaracion).toLocaleDateString('es-PE') : '—', fontSize: 8.5 },
-        { text: PAGO_LABEL[fila.estado_semaforo_pago] ?? fila.estado_semaforo_pago ?? '—', fontSize: 8.5 },
+        { text: PAGO_LABEL[fila.alerta_pago] ?? fila.alerta_pago ?? '—', fontSize: 8.5 },
       ]),
     ];
 
@@ -93,7 +93,7 @@ export class DeclaracionesService {
         ],
         defaultStyle: { font: 'Helvetica' },
       },
-      `semaforo-${tituloArea.toLowerCase()}-${anio}-${mesLabel}`,
+      `control-${tituloArea.toLowerCase()}-${anio}-${mesLabel}`,
       res,
     );
   }

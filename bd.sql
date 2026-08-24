@@ -15,7 +15,7 @@
 -- migraciones sueltas en bd/ (las de casilla SUNAFIL, estado_pago y buzón SUNAT se
 -- consolidaron acá y se borraron): estaban duplicadas y la de estado_pago había
 -- quedado DESACTUALIZADA respecto de los stored procedures de este archivo — correrla
--- habría revertido el manejo de AFP_NET en declaracion_semaforo y la preservación de
+-- habría revertido el manejo de AFP_NET en declaracion_control y la preservación de
 -- estado_pago = PAGADO en declaracion_marcar_error.
 --
 -- Para aplicar un módulo sobre una base YA cargada, copiar de acá el bloque de ese
@@ -750,7 +750,7 @@ DELIMITER ;
 -- ---------- Stored procedures: declaracion (semáforo) ----------
 
 DELIMITER ;;
-CREATE PROCEDURE `declaracion_semaforo`(IN p_periodo_anio SMALLINT, IN p_periodo_mes TINYINT)
+CREATE PROCEDURE `declaracion_control`(IN p_periodo_anio SMALLINT, IN p_periodo_mes TINYINT)
 BEGIN
     -- Vista principal del módulo: por empresa, qué obligaciones tiene ese periodo,
     -- cruzando con el cronograma (según su dígito de RUC) y lo declarado hasta ahora.
@@ -765,8 +765,8 @@ BEGIN
             WHEN d.fecha_declaracion IS NULL THEN 'PENDIENTE'
             WHEN d.fecha_declaracion <= c.fecha_limite THEN 'A_TIEMPO'
             ELSE 'TARDE'
-        END AS estado_semaforo,
-        -- Alerta independiente de pago (ver estado_semaforo, que solo mira declaración):
+        END AS alerta_declaracion,
+        -- Alerta independiente de pago (ver alerta_declaracion, que solo mira declaración):
         -- una empresa puede declarar a tiempo y seguir sin pagar, lo que sigue generando
         -- intereses moratorios aunque el semáforo de declaración esté en verde.
         CASE
@@ -775,7 +775,7 @@ BEGIN
             WHEN d.estado_pago = 'NO_PAGADO' AND c.fecha_limite < CURDATE() THEN 'VENCIDO_SIN_PAGAR'
             WHEN d.estado_pago = 'NO_PAGADO' THEN 'PENDIENTE_PAGO'
             ELSE 'PENDIENTE_VERIFICAR'
-        END AS estado_semaforo_pago
+        END AS alerta_pago
     FROM empresa e
     JOIN cronograma_vencimiento c
         -- AFP_NET no vence por dígito de RUC: es el 5.º día hábil del mes siguiente,
