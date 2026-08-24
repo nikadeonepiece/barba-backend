@@ -12,7 +12,8 @@ export class MarcarDeclaracionDto {
   @Max(12)
   periodo_mes!: number;
 
-  @IsIn(['IGV_RENTA', 'PLANILLA', 'RCE_RVIE_SIRE'])
+  // AFP_NET incluido: el controller acota además por área (solo el endpoint laboral lo acepta)
+  @IsIn(['IGV_RENTA', 'PLANILLA', 'RCE_RVIE_SIRE', 'AFP_NET'])
   tipo_obligacion!: string;
 
   @IsDateString()

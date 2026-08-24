@@ -3,7 +3,11 @@ import { existsSync, readFileSync } from 'fs';
 import { resolve } from 'path';
 import { PDFParse } from 'pdf-parse';
 
-const CARPETA_CONSTANCIAS = resolve(process.cwd(), 'uploads', 'constancias');
+// ⚠️ NUNCA dentro de `uploads/` — esa carpeta se sirve estática y SIN login desde
+// main.ts, y una constancia es el documento tributario de un cliente del estudio.
+// Mismo criterio que los archivos SIRE (sire.service.ts). Se sirven por el endpoint
+// con guard `GET /vencimientos/constancias/archivo`.
+export const CARPETA_CONSTANCIAS = resolve(process.cwd(), 'storage-privado', 'constancias');
 
 export interface TributoExtraido {
   concepto: string;
@@ -72,9 +76,13 @@ export class ConstanciasExtraccionService {
 
   // Evita path traversal: la ruta que manda el frontend viene de datos ya guardados en
   // BD, pero igual se valida por si alguien manipula el body a mano contra el endpoint.
-  private resolverRutaSegura(rutaRelativa: string): string {
-    const nombreArchivo = rutaRelativa.replace(/^\/?(uploads\/constancias\/)?/i, '').trim();
-    if (!nombreArchivo || nombreArchivo.includes('..') || nombreArchivo.includes('/') || nombreArchivo.includes('\\')) {
+  // Se queda solo con el nombre del archivo (último segmento), así sirve tanto para las
+  // rutas nuevas (`/constancias/x.pdf`) como para las que quedaron en BD del esquema
+  // viejo (`/uploads/constancias/x.pdf`) — en ambos casos el PDF vive hoy en
+  // `storage-privado/constancias`.
+  resolverRutaSegura(rutaRelativa: string): string {
+    const nombreArchivo = String(rutaRelativa || '').split(/[\\/]/).pop()?.trim() || '';
+    if (!nombreArchivo || nombreArchivo.includes('..')) {
       throw new BadRequestException('Ruta de archivo inválida');
     }
 

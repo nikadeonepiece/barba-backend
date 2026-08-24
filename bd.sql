@@ -10,6 +10,18 @@
 -- los stored procedures heredan el collation de la base, no el de las tablas (que sí
 -- declaran utf8mb4_unicode_ci) — cualquier comparación tipo `WHERE columna = parametro`
 -- revienta con "Illegal mix of collations". Detectado en vivo al probar el login real.
+-- ------------------------------------------------------------------------------
+-- FUENTE ÚNICA DEL ESQUEMA: todo el schema vive en ESTE archivo. Ya no hay
+-- migraciones sueltas en bd/ (las de casilla SUNAFIL, estado_pago y buzón SUNAT se
+-- consolidaron acá y se borraron): estaban duplicadas y la de estado_pago había
+-- quedado DESACTUALIZADA respecto de los stored procedures de este archivo — correrla
+-- habría revertido el manejo de AFP_NET en declaracion_semaforo y la preservación de
+-- estado_pago = PAGADO en declaracion_marcar_error.
+--
+-- Para aplicar un módulo sobre una base YA cargada, copiar de acá el bloque de ese
+-- módulo y correr solo eso. NUNCA correr bd.sql completo en producción: hace DROP
+-- TABLE y perdería los datos ya cargados.
+-- ------------------------------------------------------------------------------
 -- Este script NO crea la base de datos (hosting compartido no da permiso CREATE/DROP DATABASE
 -- al usuario de la cuenta) — se ejecuta contra una base ya creada y seleccionada:
 --   Local:   mysql -u root -p ESTUDIOBARBA < bd.sql   (crear antes con CREATE DATABASE IF NOT EXISTS ESTUDIOBARBA DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;)
@@ -121,10 +133,15 @@ CREATE TABLE `auth_refresh_tokens` (
   `token_hash` char(64) NOT NULL COMMENT 'SHA-256 hex del token random de 64 bytes — el texto plano nunca se guarda, solo va en la cookie httpOnly',
   `fecha_expira` datetime NOT NULL,
   `revocado` tinyint(1) NOT NULL DEFAULT '0' COMMENT 'Se marca en 1 al rotar (usado en /auth/refresh) o al hacer logout',
+  `fecha_revocado` datetime DEFAULT NULL COMMENT 'Cuándo se revocó — habilita la ventana de gracia para refrescos concurrentes',
+  `reemplazado_por` int DEFAULT NULL COMMENT 'Token que sucedió a este al rotar. Permite seguir la cadena cuando dos pestañas refrescan a la vez, y detectar reuso de token robado',
+  `ip_origen` varchar(45) DEFAULT NULL COMMENT 'IP desde la que se emitió (IPv6 entra en 45 chars)',
+  `user_agent` varchar(255) DEFAULT NULL COMMENT 'Navegador/cliente que lo pidió — auditoría de sesión',
   `fecha_creacion` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id_refresh_token`),
   UNIQUE KEY `uk_token_hash` (`token_hash`),
   KEY `fk_refresh_usuario` (`id_usuario`),
+  KEY `idx_refresh_reemplazado` (`reemplazado_por`),
   CONSTRAINT `fk_refresh_usuario` FOREIGN KEY (`id_usuario`) REFERENCES `sis_usuario` (`id_usuario`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='MÓDULO: Seguridad. Refresh tokens para renovar el access token JWT sin volver a pedir contraseña.';
 
@@ -529,7 +546,7 @@ CREATE TABLE `declaracion` (
   `id_empresa` int NOT NULL,
   `periodo_anio` smallint NOT NULL COMMENT 'Año del periodo tributario declarado',
   `periodo_mes` tinyint NOT NULL COMMENT 'Mes del periodo tributario declarado (no el mes de vencimiento)',
-  `tipo_obligacion` enum('IGV_RENTA','PLANILLA','RCE_RVIE_SIRE') NOT NULL,
+  `tipo_obligacion` enum('IGV_RENTA','PLANILLA','RCE_RVIE_SIRE','AFP_NET') NOT NULL,
   `estado_verificacion` enum('PENDIENTE_VERIFICAR','VERIFICADO_AUTOMATICO','VERIFICADO_MANUAL','ERROR_VERIFICACION') NOT NULL DEFAULT 'PENDIENTE_VERIFICAR',
   `fecha_declaracion` datetime DEFAULT NULL,
   `constancia_archivo` varchar(500) DEFAULT NULL,
@@ -761,9 +778,13 @@ BEGIN
         END AS estado_semaforo_pago
     FROM empresa e
     JOIN cronograma_vencimiento c
-        ON c.digito_ruc = RIGHT(e.ruc, 1) AND c.anio = p_periodo_anio AND c.mes = p_periodo_mes
+        -- AFP_NET no vence por dígito de RUC: es el 5.º día hábil del mes siguiente,
+        -- la MISMA fecha para todos los empleadores. Por eso su cronograma se guarda
+        -- una sola vez, bajo `digito_ruc = 0`, y aquí se cruza aparte — con el JOIN
+        -- por dígito, AFP solo le aparecía a las empresas con RUC terminado en 0.
+        ON c.anio = p_periodo_anio AND c.mes = p_periodo_mes
+        AND c.digito_ruc = IF(c.tipo_obligacion = 'AFP_NET', 0, RIGHT(e.ruc, 1))
         AND c.estado_registro = 'ACTIVO'
-        AND c.tipo_obligacion != 'AFP_NET' -- AFP_NET es reservado: la tabla `declaracion` todavía no lo soporta (ver ESTADO_AVANCE.md)
     LEFT JOIN declaracion d
         ON d.id_empresa = e.id_empresa AND d.periodo_anio = p_periodo_anio AND d.periodo_mes = p_periodo_mes
         AND d.tipo_obligacion = c.tipo_obligacion AND d.estado_registro = 'ACTIVO'
@@ -784,7 +805,11 @@ BEGIN
     ON DUPLICATE KEY UPDATE
         estado_verificacion = 'VERIFICADO_MANUAL',
         fecha_declaracion = p_fecha_declaracion,
-        constancia_archivo = p_constancia_archivo,
+        -- COALESCE, no asignación directa: re-marcar una declaración ya registrada
+        -- (ej. para corregir la fecha) llegaba con la constancia en NULL y BORRABA
+        -- silenciosamente el PDF ya vinculado. Si no se manda constancia, se conserva
+        -- la que ya estaba; para reemplazarla se sube/escribe una nueva.
+        constancia_archivo = COALESCE(NULLIF(p_constancia_archivo, ''), constancia_archivo),
         fuente = 'MANUAL',
         mensaje_error = NULL,
         id_usuario_mod = p_id_usuario_mod;
@@ -810,10 +835,21 @@ BEGIN
             IF(p_pago_verificado = 0, 'PENDIENTE_VERIFICAR', IF(p_importe_pagado IS NULL, 'NO_PAGADO', 'PAGADO')),
             p_importe_pagado, p_fecha_pago)
     ON DUPLICATE KEY UPDATE
-        estado_verificacion = IF(p_fecha_declaracion IS NULL, 'PENDIENTE_VERIFICAR', 'VERIFICADO_AUTOMATICO'),
-        fecha_declaracion = p_fecha_declaracion,
+        -- ⚠️ ORDEN IMPORTANTE: dentro de ON DUPLICATE KEY UPDATE, una columna ya asignada
+        -- devuelve su valor NUEVO. `fuente` y `fecha_declaracion` se calculan ANTES de
+        -- tocar `estado_verificacion` justo para poder leer el estado ANTERIOR.
+        --
+        -- Una verificación automática que NO encuentra la declaración (p_fecha_declaracion
+        -- NULL) no debe pisar un marcado MANUAL: el scraping del portal SUNAT es frágil
+        -- (cambia de selectores) y un falso "no declarado" borraba la fecha y la constancia
+        -- que cargó la persona, devolviendo la fila a rojo. Si sí la encuentra, manda lo
+        -- automático, que es lo verificado contra SUNAT.
+        fuente = IF(p_fecha_declaracion IS NULL AND estado_verificacion = 'VERIFICADO_MANUAL', 'MANUAL', 'AUTOMATICO'),
+        fecha_declaracion = IF(p_fecha_declaracion IS NULL AND estado_verificacion = 'VERIFICADO_MANUAL', fecha_declaracion, p_fecha_declaracion),
+        estado_verificacion = IF(p_fecha_declaracion IS NULL,
+                                 IF(estado_verificacion = 'VERIFICADO_MANUAL', 'VERIFICADO_MANUAL', 'PENDIENTE_VERIFICAR'),
+                                 'VERIFICADO_AUTOMATICO'),
         constancia_archivo = COALESCE(p_constancia_archivo, constancia_archivo),
-        fuente = 'AUTOMATICO',
         mensaje_error = NULL,
         fecha_ultima_verificacion = NOW(),
         estado_pago = IF(p_pago_verificado = 0, estado_pago, IF(p_importe_pagado IS NULL, 'NO_PAGADO', 'PAGADO')),
@@ -833,10 +869,19 @@ BEGIN
     INSERT INTO declaracion (id_empresa, periodo_anio, periodo_mes, tipo_obligacion, estado_verificacion, fuente, mensaje_error, fecha_ultima_verificacion, estado_pago)
     VALUES (p_id_empresa, p_periodo_anio, p_periodo_mes, p_tipo, 'ERROR_VERIFICACION', 'AUTOMATICO', p_mensaje_error, NOW(), 'ERROR_VERIFICACION')
     ON DUPLICATE KEY UPDATE
-        estado_verificacion = 'ERROR_VERIFICACION',
-        mensaje_error = p_mensaje_error,
-        fecha_ultima_verificacion = NOW(),
-        estado_pago = 'ERROR_VERIFICACION';
+        -- ⚠️ ORDEN IMPORTANTE: una columna ya asignada devuelve su valor NUEVO dentro
+        -- del ON DUPLICATE KEY UPDATE, así que todo lo que necesite leer el estado
+        -- ANTERIOR va antes de reasignar `estado_verificacion`.
+        --
+        -- Que el robot falle no debe ensuciar el trabajo que ya hizo una persona: si la
+        -- fila estaba VERIFICADO_MANUAL, se conserva tal cual (solo se anota que se
+        -- intentó verificar). Antes, un scraping caído la pintaba de rojo y la sumaba al
+        -- contador de "con error", aunque la declaración SÍ estuviera presentada.
+        -- Igual con el pago: un PAGADO ya confirmado no se degrada a error.
+        mensaje_error = IF(estado_verificacion = 'VERIFICADO_MANUAL', mensaje_error, p_mensaje_error),
+        estado_pago = IF(estado_verificacion = 'VERIFICADO_MANUAL' OR estado_pago = 'PAGADO', estado_pago, 'ERROR_VERIFICACION'),
+        estado_verificacion = IF(estado_verificacion = 'VERIFICADO_MANUAL', 'VERIFICADO_MANUAL', 'ERROR_VERIFICACION'),
+        fecha_ultima_verificacion = NOW();
 END ;;
 DELIMITER ;
 
@@ -1080,6 +1125,189 @@ INSERT INTO `sis_accion` (`id_modulo`, `codigo_accion`, `descripcion`, `tipo_ope
 INSERT INTO `sis_permiso` (`id_rol`, `id_accion`, `estado_registro`)
 SELECT 1, id_accion, 'ACTIVO' FROM sis_accion
 WHERE id_modulo = @id_modulo_vencimientos_sire2 AND codigo_accion = 'registrar_credenciales_sire';
+
+
+-- ==============================================================================
+-- MÓDULO CASILLA ELECTRÓNICA SUNAFIL (Vencimientos - Laboral)
+-- ==============================================================================
+-- SUNAFIL no publica API para la casilla electrónica: el portal
+-- (https://casillaelectronica.sunafil.gob.pe/si.inbox/) es una app JSF/PrimeFaces
+-- server-rendered, sin REST/JSON. Se lee por scraping con Playwright, ver
+-- apps/api/src/vencimientos/sunafil/sunafil-casilla.client.ts.
+--
+-- Sin tabla de credenciales a propósito: el acceso de EMPLEADOR no tiene clave propia,
+-- delega en la Clave SOL de SUNAT vía OAuth2 — se reutilizan empresa.sunat_sol_usuario /
+-- empresa.sunat_sol_password, ya cifradas con CredencialesCryptoService.
+-- ==============================================================================
+
+-- ---------- Notificaciones depositadas por SUNAFIL en la casilla de cada empresa ----------
+DROP TABLE IF EXISTS `sunafil_notificacion`;
+CREATE TABLE `sunafil_notificacion` (
+  `id_notificacion` int NOT NULL AUTO_INCREMENT,
+  `id_empresa` int NOT NULL COMMENT 'Empresa cliente dueña de la casilla',
+  `codigo_notificacion` varchar(100) DEFAULT NULL COMMENT 'Identificador que muestra SUNAFIL en la bandeja, si la fila lo trae',
+  `tipo_documento` varchar(255) DEFAULT NULL COMMENT 'Ej. Resolución de Sub Intendencia, Medida de Requerimiento, Acta de Infracción',
+  `asunto` varchar(500) DEFAULT NULL,
+  `numero_expediente` varchar(100) DEFAULT NULL COMMENT 'Expediente del PAS / orden de inspección asociada',
+  `remitente` varchar(255) DEFAULT NULL COMMENT 'Intendencia regional que emite',
+  `fecha_deposito` datetime DEFAULT NULL COMMENT 'Cuándo SUNAFIL depositó el documento — desde acá corren los plazos legales',
+  `leido_en_sunafil` tinyint(1) NOT NULL DEFAULT 0 COMMENT 'Si la bandeja marca la notificación como ya abierta en el portal',
+  `archivo_ruta` varchar(255) DEFAULT NULL COMMENT 'Relativa a storage-privado/ (NUNCA uploads/, no es pública)',
+  `datos_crudos_json` json DEFAULT NULL COMMENT 'Fila completa tal cual se leyó del portal — red de seguridad mientras los selectores del inbox no estén confirmados en vivo',
+  `hash_dedupe` char(64) NOT NULL COMMENT 'SHA-256 de los campos identificatorios de la fila; hace idempotente re-sincronizar la misma bandeja',
+  `estado_gestion` enum('NUEVA','EN_REVISION','ATENDIDA') NOT NULL DEFAULT 'NUEVA' COMMENT 'Seguimiento interno del estudio, independiente de si SUNAFIL la marca leída',
+  `observaciones` text DEFAULT NULL COMMENT 'Nota del encargado laboral al gestionar la notificación',
+  `fecha_sincronizacion` timestamp NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'Cuándo la trajo el sistema (no confundir con fecha_deposito)',
+  `estado_registro` enum('ACTIVO','ELIMINADO') NOT NULL DEFAULT 'ACTIVO',
+  `id_usuario_crea` int NOT NULL COMMENT 'Quién disparó la sincronización que la trajo',
+  `id_usuario_mod` int DEFAULT NULL,
+  PRIMARY KEY (`id_notificacion`),
+  UNIQUE KEY `uk_sunafil_notificacion_dedupe` (`id_empresa`, `hash_dedupe`),
+  KEY `fk_sunafil_notificacion_empresa` (`id_empresa`),
+  KEY `fk_sunafil_notificacion_usuario` (`id_usuario_crea`),
+  KEY `ix_sunafil_notificacion_gestion` (`id_empresa`, `estado_gestion`, `fecha_deposito`),
+  CONSTRAINT `fk_sunafil_notificacion_empresa` FOREIGN KEY (`id_empresa`) REFERENCES `empresa` (`id_empresa`) ON DELETE CASCADE,
+  CONSTRAINT `fk_sunafil_notificacion_usuario` FOREIGN KEY (`id_usuario_crea`) REFERENCES `sis_usuario` (`id_usuario`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='MÓDULO: Vencimientos Laboral. Notificaciones leídas de la casilla electrónica de SUNAFIL por empresa cliente.';
+
+-- ---------- Bitácora de cada corrida de sincronización ----------
+-- El scraping contra SUNAFIL puede fallar por mil motivos ajenos al sistema (Clave SOL
+-- cambiada, portal caído, rediseño del inbox, WAF). Igual que la regla de oro de Fase 2:
+-- si falla una empresa NUNCA se asume "sin notificaciones" — queda el error registrado
+-- acá con su motivo y el resto de empresas sigue procesándose.
+DROP TABLE IF EXISTS `sunafil_sincronizacion`;
+CREATE TABLE `sunafil_sincronizacion` (
+  `id_sincronizacion` int NOT NULL AUTO_INCREMENT,
+  `id_empresa` int NOT NULL,
+  `estado` enum('EN_PROCESO','EXITOSO','ERROR') NOT NULL DEFAULT 'EN_PROCESO',
+  `cantidad_leidas` int NOT NULL DEFAULT 0 COMMENT 'Filas encontradas en la bandeja',
+  `cantidad_nuevas` int NOT NULL DEFAULT 0 COMMENT 'Cuántas de esas no existían todavía en sunafil_notificacion',
+  `mensaje_error` text DEFAULT NULL COMMENT 'Detalle si estado=ERROR, para revisión manual sin repetir el intento a ciegas',
+  `fecha_inicio` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
+  `fecha_fin` datetime DEFAULT NULL,
+  `estado_registro` enum('ACTIVO','ELIMINADO') NOT NULL DEFAULT 'ACTIVO',
+  `id_usuario_crea` int NOT NULL,
+  PRIMARY KEY (`id_sincronizacion`),
+  KEY `fk_sunafil_sincronizacion_empresa` (`id_empresa`),
+  KEY `fk_sunafil_sincronizacion_usuario` (`id_usuario_crea`),
+  CONSTRAINT `fk_sunafil_sincronizacion_empresa` FOREIGN KEY (`id_empresa`) REFERENCES `empresa` (`id_empresa`) ON DELETE CASCADE,
+  CONSTRAINT `fk_sunafil_sincronizacion_usuario` FOREIGN KEY (`id_usuario_crea`) REFERENCES `sis_usuario` (`id_usuario`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='MÓDULO: Vencimientos Laboral. Bitácora de cada corrida de lectura de la casilla SUNAFIL.';
+
+-- ---------- Permisos ----------
+-- Van sobre VENCIMIENTOS_LABORAL: SUNAFIL es fiscalización laboral, no tributaria.
+SET @id_modulo_vencimientos_laboral_sunafil = (SELECT id_modulo FROM sis_modulo WHERE nombre = 'VENCIMIENTOS_LABORAL');
+
+INSERT INTO `sis_accion` (`id_modulo`, `codigo_accion`, `descripcion`, `tipo_operacion`, `estado_registro`) VALUES
+(@id_modulo_vencimientos_laboral_sunafil, 'ver_casilla_sunafil', 'Ver las notificaciones de la casilla electrónica SUNAFIL de las empresas cliente', 'READ', 'ACTIVO'),
+(@id_modulo_vencimientos_laboral_sunafil, 'sincronizar_casilla_sunafil', 'Leer la casilla electrónica SUNAFIL de una empresa contra el portal real', 'SPECIAL', 'ACTIVO'),
+(@id_modulo_vencimientos_laboral_sunafil, 'gestionar_casilla_sunafil', 'Marcar una notificación SUNAFIL como en revisión o atendida', 'UPDATE', 'ACTIVO');
+
+INSERT INTO `sis_permiso` (`id_rol`, `id_accion`, `estado_registro`)
+SELECT 1, id_accion, 'ACTIVO' FROM sis_accion
+WHERE id_modulo = @id_modulo_vencimientos_laboral_sunafil
+  AND codigo_accion IN ('ver_casilla_sunafil', 'sincronizar_casilla_sunafil', 'gestionar_casilla_sunafil');
+
+
+-- ==============================================================================
+-- MÓDULO BUZÓN ELECTRÓNICO SUNAT (Vencimientos - Tributario)
+-- ==============================================================================
+-- CONTEXTO — por qué scraping y no API (investigado 21/08/2026):
+-- SUNAT sí publica APIs REST oficiales para varias cosas (SIRE/RVIE-RCE con
+-- client_id/secret vía `api-seguridad.sunat.gob.pe`, CPE, padrón RUC), pero para
+-- BUZÓN ELECTRÓNICO / notificaciones SOL **no existe API pública ni manual de
+-- servicio web**: toda la documentación oficial (orientacion.sunat.gob.pe/6619,
+-- gob.pe/7880) solo describe el portal web y las apps móviles. Lo único
+-- programático que ofrece SUNAT es el AVISO por correo (gob.pe/7878), que informa
+-- "tienes una notificación" pero no trae contenido ni el PDF, así que no sirve
+-- para poblar esta tabla. Los productos que lo automatizan (BuzOne y similares)
+-- lo hacen scrapeando el portal.
+--
+-- ✅ VERIFICADO CONTRA LOS SERVIDORES REALES (21/08/2026, sin usar Clave SOL de
+-- ningún cliente): la aplicación del buzón está desplegada en WebLogic bajo
+-- `https://ww1.sunat.gob.pe/ol-ti-itbuzon/` — ese contexto responde 403 del propio
+-- WebLogic (existe, exige sesión), mientras que los nombres alternativos probados
+-- (ol-ti-itnotifica, ol-ti-itbuzonsol, ol-ti-itconsultanotificacion, etc.) los
+-- rechaza el nginx de borde con 404, o sea ni siquiera están desplegados.
+--
+-- Igual que SIRE y SUNAFIL, este módulo NO tiene tablas de credenciales: se
+-- reutilizan `empresa.sunat_sol_usuario` / `empresa.sunat_sol_password`, ya
+-- cifradas en aplicación con `CredencialesCryptoService` (AES-256-GCM).
+-- Este archivo es la ÚNICA fuente del esquema del módulo: no hay migración suelta
+-- en bd/ para el buzón (a diferencia de la casilla SUNAFIL). Para aplicarlo sobre una
+-- base YA cargada, copiar de acá el bloque de este módulo — nunca correr bd.sql
+-- completo en producción, hace DROP TABLE y perdería los datos.
+-- ==============================================================================
+
+-- ---------- Notificaciones depositadas por SUNAT en el buzón de cada empresa ----------
+DROP TABLE IF EXISTS `sunat_buzon_notificacion`;
+CREATE TABLE `sunat_buzon_notificacion` (
+  `id_notificacion` int NOT NULL AUTO_INCREMENT,
+  `id_empresa` int NOT NULL COMMENT 'Empresa cliente dueña del buzón',
+  `bandeja` varchar(100) DEFAULT NULL COMMENT 'Carpeta/pestaña del buzón donde apareció (Notificaciones SOL, Avisos, Comunicaciones)',
+  `codigo_notificacion` varchar(100) DEFAULT NULL COMMENT 'Código/N° de notificación que muestra el buzón, si la fila lo trae',
+  `tipo_documento` varchar(255) DEFAULT NULL COMMENT 'Ej. Orden de Pago, Resolución de Multa, Resolución de Ejecución Coactiva, Esquela, Carta',
+  `numero_documento` varchar(100) DEFAULT NULL COMMENT 'N° del acto administrativo notificado (distinto del código de la notificación)',
+  `asunto` varchar(500) DEFAULT NULL,
+  `dependencia` varchar(255) DEFAULT NULL COMMENT 'Intendencia/dependencia de SUNAT que emite',
+  `fecha_deposito` datetime DEFAULT NULL COMMENT 'Cuándo SUNAT depositó el documento en el buzón — la notificación surte efecto el día hábil siguiente, desde ahí corren los plazos',
+  `leido_en_sunat` tinyint(1) NOT NULL DEFAULT 0 COMMENT 'Si la bandeja marca la notificación como ya abierta en el portal. OJO: el plazo legal NO depende de esto, corre desde fecha_deposito',
+  `archivo_ruta` varchar(255) DEFAULT NULL COMMENT 'Relativa a storage-privado/ (NUNCA uploads/, no es pública). Sin usar todavía: esta fase solo lista, no descarga adjuntos',
+  `datos_crudos_json` json DEFAULT NULL COMMENT 'Fila completa tal cual se leyó del portal — red de seguridad mientras los selectores del buzón no estén confirmados en vivo',
+  `hash_dedupe` char(64) NOT NULL COMMENT 'SHA-256 de los campos identificatorios de la fila; hace idempotente re-sincronizar el mismo buzón',
+  `estado_gestion` enum('NUEVA','EN_REVISION','ATENDIDA') NOT NULL DEFAULT 'NUEVA' COMMENT 'Seguimiento interno del estudio, independiente de si SUNAT la marca leída',
+  `observaciones` text DEFAULT NULL COMMENT 'Nota del encargado tributario al gestionar la notificación',
+  `fecha_sincronizacion` timestamp NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'Cuándo la trajo el sistema (no confundir con fecha_deposito)',
+  `estado_registro` enum('ACTIVO','ELIMINADO') NOT NULL DEFAULT 'ACTIVO',
+  `id_usuario_crea` int NOT NULL COMMENT 'Quién disparó la sincronización que la trajo',
+  `id_usuario_mod` int DEFAULT NULL,
+  PRIMARY KEY (`id_notificacion`),
+  UNIQUE KEY `uk_sunat_buzon_notificacion_dedupe` (`id_empresa`, `hash_dedupe`),
+  KEY `fk_sunat_buzon_notificacion_empresa` (`id_empresa`),
+  KEY `fk_sunat_buzon_notificacion_usuario` (`id_usuario_crea`),
+  KEY `ix_sunat_buzon_notificacion_gestion` (`id_empresa`, `estado_gestion`, `fecha_deposito`),
+  CONSTRAINT `fk_sunat_buzon_notificacion_empresa` FOREIGN KEY (`id_empresa`) REFERENCES `empresa` (`id_empresa`) ON DELETE CASCADE,
+  CONSTRAINT `fk_sunat_buzon_notificacion_usuario` FOREIGN KEY (`id_usuario_crea`) REFERENCES `sis_usuario` (`id_usuario`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='MÓDULO: Vencimientos Tributario. Notificaciones leídas del Buzón Electrónico de SUNAT por empresa cliente.';
+
+-- ---------- Bitácora de cada corrida de sincronización ----------
+-- Misma regla de oro que Fase 2 y que SUNAFIL: si falla una empresa NUNCA se asume
+-- "sin notificaciones" — queda el error registrado acá con su motivo y el resto de
+-- empresas sigue procesándose.
+DROP TABLE IF EXISTS `sunat_buzon_sincronizacion`;
+CREATE TABLE `sunat_buzon_sincronizacion` (
+  `id_sincronizacion` int NOT NULL AUTO_INCREMENT,
+  `id_empresa` int NOT NULL,
+  `estado` enum('EN_PROCESO','EXITOSO','ERROR') NOT NULL DEFAULT 'EN_PROCESO',
+  `cantidad_leidas` int NOT NULL DEFAULT 0 COMMENT 'Filas encontradas en el buzón',
+  `cantidad_nuevas` int NOT NULL DEFAULT 0 COMMENT 'Cuántas de esas no existían todavía en sunat_buzon_notificacion',
+  `mensaje_error` text DEFAULT NULL COMMENT 'Detalle si estado=ERROR, para revisión manual sin repetir el intento a ciegas',
+  `fecha_inicio` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
+  `fecha_fin` datetime DEFAULT NULL,
+  `estado_registro` enum('ACTIVO','ELIMINADO') NOT NULL DEFAULT 'ACTIVO',
+  `id_usuario_crea` int NOT NULL,
+  PRIMARY KEY (`id_sincronizacion`),
+  KEY `fk_sunat_buzon_sincronizacion_empresa` (`id_empresa`),
+  KEY `fk_sunat_buzon_sincronizacion_usuario` (`id_usuario_crea`),
+  KEY `ix_sunat_buzon_sincronizacion_empresa_fecha` (`id_empresa`, `fecha_inicio`),
+  CONSTRAINT `fk_sunat_buzon_sincronizacion_empresa` FOREIGN KEY (`id_empresa`) REFERENCES `empresa` (`id_empresa`) ON DELETE CASCADE,
+  CONSTRAINT `fk_sunat_buzon_sincronizacion_usuario` FOREIGN KEY (`id_usuario_crea`) REFERENCES `sis_usuario` (`id_usuario`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='MÓDULO: Vencimientos Tributario. Bitácora de cada corrida de lectura del Buzón Electrónico de SUNAT.';
+
+-- ---------- Permisos ----------
+-- Van sobre VENCIMIENTOS_TRIBUTARIO (a diferencia de la casilla SUNAFIL, que es
+-- fiscalización laboral): el buzón SOL notifica actos tributarios.
+SET @id_modulo_vencimientos_tributario_buzon = (SELECT id_modulo FROM sis_modulo WHERE nombre = 'VENCIMIENTOS_TRIBUTARIO');
+
+INSERT INTO `sis_accion` (`id_modulo`, `codigo_accion`, `descripcion`, `tipo_operacion`, `estado_registro`) VALUES
+(@id_modulo_vencimientos_tributario_buzon, 'ver_buzon_sunat', 'Ver las notificaciones del Buzón Electrónico SUNAT de las empresas cliente', 'READ', 'ACTIVO'),
+(@id_modulo_vencimientos_tributario_buzon, 'sincronizar_buzon_sunat', 'Leer el Buzón Electrónico SUNAT de una empresa contra el portal real', 'SPECIAL', 'ACTIVO'),
+(@id_modulo_vencimientos_tributario_buzon, 'gestionar_buzon_sunat', 'Marcar una notificación del buzón SUNAT como en revisión o atendida', 'UPDATE', 'ACTIVO');
+
+INSERT INTO `sis_permiso` (`id_rol`, `id_accion`, `estado_registro`)
+SELECT 1, id_accion, 'ACTIVO' FROM sis_accion
+WHERE id_modulo = @id_modulo_vencimientos_tributario_buzon
+  AND codigo_accion IN ('ver_buzon_sunat', 'sincronizar_buzon_sunat', 'gestionar_buzon_sunat');
 
 
 -- ==============================================================================
@@ -1856,6 +2084,47 @@ INSERT INTO cronograma_vencimiento (anio, mes, digito_ruc, tipo_obligacion, fech
 (2026, 12, 9, 'PLANILLA', '2027-01-25'),
 (2026, 12, 9, 'RCE_RVIE_SIRE', '2027-01-22')
 ON DUPLICATE KEY UPDATE fecha_limite = VALUES(fecha_limite);
+
+-- ==============================================================================
+-- MIGRACIONES SOBRE BASES YA EXISTENTES
+-- ==============================================================================
+-- Los CREATE TABLE de arriba son el esquema de referencia para una base NUEVA.
+-- Una base que ya está corriendo no se actualiza con ellos: hay que aplicar los
+-- ALTER de esta sección.
+--
+-- Todos usan IF NOT EXISTS (soportado por MariaDB), así que correr el bloque dos
+-- veces no falla ni duplica nada. Aplicar en local primero, después en producción.
+-- ------------------------------------------------------------------------------
+
+-- 2026-08-23 · auth_refresh_tokens: ventana de gracia para refrescos concurrentes
+--
+-- Sin estas columnas el login rompe con "Unknown column", porque AuthService ya
+-- las escribe al rotar el refresh token.
+--
+-- Para qué sirven:
+--   fecha_revocado  + reemplazado_por → si dos peticiones refrescan a la vez, la
+--     segunda llegaba con el token que la primera acababa de rotar y cerraba la
+--     sesión ("Sesión expirada" sin motivo). Con estas dos columnas se sigue la
+--     cadena de reemplazos durante 15s en vez de cortar. Pasada esa ventana un
+--     token ya rotado que reaparece sigue fallando: eso es reuso, no concurrencia.
+--   ip_origen + user_agent → auditoría de sesión (desde dónde se emitió cada token).
+--
+-- Todas admiten NULL: los tokens ya emitidos siguen siendo válidos.
+
+ALTER TABLE `auth_refresh_tokens`
+  ADD COLUMN IF NOT EXISTS `fecha_revocado` datetime DEFAULT NULL
+    COMMENT 'Cuándo se revocó — habilita la ventana de gracia para refrescos concurrentes',
+  ADD COLUMN IF NOT EXISTS `reemplazado_por` int DEFAULT NULL
+    COMMENT 'Token que sucedió a este al rotar. Permite seguir la cadena cuando dos pestañas refrescan a la vez, y detectar reuso de token robado',
+  ADD COLUMN IF NOT EXISTS `ip_origen` varchar(45) DEFAULT NULL
+    COMMENT 'IP desde la que se emitió (IPv6 entra en 45 chars)',
+  ADD COLUMN IF NOT EXISTS `user_agent` varchar(255) DEFAULT NULL
+    COMMENT 'Navegador/cliente que lo pidió — auditoría de sesión';
+
+ALTER TABLE `auth_refresh_tokens`
+  ADD INDEX IF NOT EXISTS `idx_refresh_reemplazado` (`reemplazado_por`);
+
+-- ==============================================================================
 
 /*!40101 SET SQL_MODE=@OLD_SQL_MODE */;
 /*!40014 SET FOREIGN_KEY_CHECKS=@OLD_FOREIGN_KEY_CHECKS */;

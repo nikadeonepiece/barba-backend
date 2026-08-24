@@ -19,6 +19,12 @@ listo para copiar y pegar, incluyendo un asunto sugerido en la primera línea.`;
 export class RedaccionCorreoService {
   constructor(private ia: AsistenteIaBaseService) {}
 
+  // Lo consulta el frontend al abrir la pantalla, para avisar antes de que el
+  // usuario escriba el correo entero (ver redaccion-correo.controller.ts).
+  get iaDisponible(): boolean {
+    return this.ia.iaDisponible;
+  }
+
   async redactar(dto: RedactarCorreoDto, userId: number): Promise<{ success: boolean; texto: string }> {
     if (!this.ia.iaDisponible) {
       throw new BadRequestException('El asistente de redacción necesita ANTHROPIC_API_KEY configurada (a diferencia del resumen diario, este no tiene modo sin IA porque su única función es redactar).');

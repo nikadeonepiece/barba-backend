@@ -264,7 +264,9 @@ export class SunatScrapingClient {
       // confirmar si la columna 8 es de verdad el importe pagado, sin arriesgar nada de
       // lo que ya funciona.
       try {
-        const carpetaDebug = path.join(process.cwd(), 'uploads', 'debug-sunat');
+        // ⚠️ Carpeta PRIVADA: estos volcados son el HTML/PNG de una sesión SUNAT ya logueada
+        // de un cliente del estudio. En `uploads/` quedaban descargables sin login.
+        const carpetaDebug = path.join(process.cwd(), 'storage-privado', 'debug-sunat');
         fs.mkdirSync(carpetaDebug, { recursive: true });
         const filaHtml = await fila.evaluate((el) => el.outerHTML).catch(() => null);
         if (filaHtml) {
@@ -296,11 +298,11 @@ export class SunatScrapingClient {
             await botonGuardar.click();
             const descarga = await esperarDescarga;
             if (descarga) {
-              const carpetaConstancias = path.join(process.cwd(), 'uploads', 'constancias');
+              const carpetaConstancias = path.join(process.cwd(), 'storage-privado', 'constancias');
               fs.mkdirSync(carpetaConstancias, { recursive: true });
               const nombreArchivo = `constancia-${Date.now()}-${Math.round(Math.random() * 1e9)}.pdf`;
               await descarga.saveAs(path.join(carpetaConstancias, nombreArchivo));
-              rutaConstancia = `/uploads/constancias/${nombreArchivo}`;
+              rutaConstancia = `/constancias/${nombreArchivo}`;
             }
           }
         }

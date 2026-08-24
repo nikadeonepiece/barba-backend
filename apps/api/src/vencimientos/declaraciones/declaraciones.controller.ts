@@ -10,7 +10,10 @@ import {
 } from './dto/declaracion.dto';
 
 const TIPOS_TRIBUTARIO = ['IGV_RENTA', 'RCE_RVIE_SIRE'];
-const TIPOS_LABORAL = ['PLANILLA'];
+// AFP_NET va con lo laboral (misma área que la planilla). Solo se marca A MANO:
+// AFPnet no es SUNAT, así que la verificación automática de Fase 2 no lo cubre —
+// ver la lista aparte en sunat-sync.controller.ts, que sigue siendo solo PLANILLA.
+const TIPOS_LABORAL = ['PLANILLA', 'AFP_NET'];
 
 @Controller('vencimientos')
 @UseGuards(JwtAuthGuard, PermissionsGuard)

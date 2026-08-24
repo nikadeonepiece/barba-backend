@@ -1,32 +1,11 @@
 import { Injectable, InternalServerErrorException, Logger } from '@nestjs/common';
 import { Response } from 'express';
-// pdfmake exporta una instancia de clase (sus métodos viven en el prototipo, no como
-// propiedades propias) — `import * as pdfMake` copia solo propiedades propias y pierde
-// setFonts/createPdf al empaquetar con webpack. `import ... = require(...)` toma la
-// referencia real sin ese "copiado".
-import pdfMake = require('pdfmake');
 import type { TDocumentDefinitions } from 'pdfmake/interfaces';
-
-// Fuentes estándar del PDF (Helvetica) — no son archivos .ttf embebidos, son una de las
-// 14 fuentes base que todo lector de PDF ya trae incorporadas. Por eso pdfmake genera el
-// documento en JS puro, sin lanzar ningún binario externo (a diferencia del Chromium que
-// usábamos antes): corre igual en Windows local que en hosting compartido, sin depender
-// de límites de procesos/hilos del sistema operativo.
-const FUENTES_ESTANDAR = require('pdfmake/standard-fonts/Helvetica');
-pdfMake.setFonts(FUENTES_ESTANDAR);
-
-// Los nombres de las 14 fuentes base del PDF ("Helvetica-Bold", etc.) pasan por el mismo
-// validador de "acceso a archivo local" que usaría una ruta real — sin autorizarlos
-// explícitamente aquí, pdfmake los rechaza y ni siquiera puede escribir texto en negrita.
-const NOMBRES_FUENTES_PERMITIDAS = new Set(
-  Object.values(FUENTES_ESTANDAR).flatMap((variantes: any) => Object.values(variantes)),
-);
-
-// Nuestros documentos (cotización, guía de remisión) nunca referencian imágenes por URL
-// ni por ruta de archivo local — solo texto, tablas y las fuentes estándar de arriba —
-// así que se deniega cualquier otro acceso explícitamente.
-pdfMake.setUrlAccessPolicy(() => false);
-pdfMake.setLocalAccessPolicy((path: string) => NOMBRES_FUENTES_PERMITIDAS.has(path));
+// El registro de fuentes (Helvetica estándar + Roboto embebida) y las políticas de acceso
+// viven en un solo lugar: pdfmake 0.3 es un singleton de módulo, así que si cada servicio
+// llamara a setFonts()/setLocalAccessPolicy() por su cuenta, el último en cargar dejaría al
+// otro sin fuentes. Ver el comentario de cabecera de pdf-fuentes.ts.
+import { pdfMake, FUENTE_ESTANDAR } from './pdf-fuentes';
 
 @Injectable()
 export class PdfService {
@@ -34,7 +13,15 @@ export class PdfService {
 
   async generarPdf(docDefinition: TDocumentDefinitions, nombreArchivo: string, res: Response) {
     try {
-      const pdfBuffer = await pdfMake.createPdf(docDefinition).getBuffer();
+      // 'Helvetica' explícita, no por omisión: desde que también se registra Roboto (para los
+      // reportes HTML de PdfHtmlService), pdfmake toma Roboto como fuente por defecto y estos
+      // documentos cambiarían de tipografía en silencio. Solo se rellena si el reporte no
+      // eligió una, así que un docDefinition que ya define su font manda igual.
+      const conFuente: TDocumentDefinitions = {
+        ...docDefinition,
+        defaultStyle: { font: FUENTE_ESTANDAR, ...docDefinition.defaultStyle },
+      };
+      const pdfBuffer = await pdfMake.createPdf(conFuente).getBuffer();
 
       res.set({
         'Content-Type': 'application/pdf',

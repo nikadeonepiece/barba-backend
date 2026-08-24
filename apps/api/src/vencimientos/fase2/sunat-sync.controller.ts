@@ -3,6 +3,10 @@ import { JwtAuthGuard, PermissionsGuard, RequirePermissions } from '@app/auth';
 import { SunatSyncService } from './sunat-sync.service';
 
 const TIPOS_TRIBUTARIO = ['IGV_RENTA', 'RCE_RVIE_SIRE'];
+// ⚠️ A propósito NO incluye AFP_NET, aunque el semáforo laboral sí lo muestre:
+// AFPnet es un portal de las AFP, no de SUNAT, y no hay integración con él —
+// esa obligación se marca a mano. Si se agrega acá, el usuario recibiría un
+// ERROR_VERIFICACION en cada intento.
 const TIPOS_LABORAL = ['PLANILLA'];
 
 /**

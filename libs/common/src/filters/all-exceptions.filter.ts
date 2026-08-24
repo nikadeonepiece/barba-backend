@@ -24,6 +24,14 @@ export class AllExceptionsFilter implements ExceptionFilter {
       message = typeof exceptionResponse === 'string'
         ? exceptionResponse
         : (exceptionResponse as any).message || exception.message;
+
+      // El rate limit responde "ThrottlerException: Too Many Requests" — en inglés y
+      // sin decir qué hacer. El usuario final ve este texto tal cual en el toast.
+      if (status === HttpStatus.TOO_MANY_REQUESTS && String(message).includes('ThrottlerException')) {
+        message = request.url?.includes('/auth/login')
+          ? 'Demasiados intentos de acceso con este correo. Espera un minuto y vuelve a intentar.'
+          : 'Estás haciendo demasiadas solicitudes seguidas. Espera un momento y vuelve a intentar.';
+      }
     } else if (exception instanceof Error) {
       // ⚠️ AQUÍ ESTÁ LA MAGIA PARA SQL NATIVO
       // Si el error es de base de datos (Ej: ER_DUP_ENTRY en MySQL), lo atrapamos

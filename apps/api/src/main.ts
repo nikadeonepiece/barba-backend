@@ -7,7 +7,7 @@ import { join } from 'path'; // 🔥 NUEVO: Para manejar las rutas de las carpet
 import helmet from 'helmet';
 import cookieParser from 'cookie-parser';
 import { ApiModule } from './api.module';
-import { AllExceptionsFilter, TransformInterceptor } from '@app/common';
+import { AllExceptionsFilter, TransformInterceptor, TimeoutInterceptor } from '@app/common';
 import { winstonConfig } from '@app/logger';
 import { WinstonModule } from 'nest-winston';
 
@@ -35,8 +35,12 @@ async function bootstrap() {
   app.enableCors({
     origin: [
       'http://localhost:4200',
-      'http://localhost:62003',
-            'http://barba.difusioneslaborales.com'
+      'http://localhost:55705',
+      'http://barba.difusioneslaborales.com',
+      // El frontend de producción (environment.ts) apunta a HTTPS — sin este origen
+      // el navegador bloquea por CORS toda llamada al API si no se sirve same-origin.
+      'https://barba.difusioneslaborales.com',
+      'https://www.barba.difusioneslaborales.com'
     ],
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
     credentials: true
@@ -50,7 +54,9 @@ async function bootstrap() {
     }),
   );
 
-  app.useGlobalInterceptors(new TransformInterceptor());
+  // TimeoutInterceptor PRIMERO: si una query se cuelga, corta la petición y deja que
+  // el `finally` libere la conexión, en vez de agotar el pool y tumbar todo el ERP.
+  app.useGlobalInterceptors(new TimeoutInterceptor(), new TransformInterceptor());
   app.useGlobalFilters(new AllExceptionsFilter());
 
   // 🔥 NUEVO: Exponer la carpeta "uploads" para que el frontend pueda descargar/ver los archivos

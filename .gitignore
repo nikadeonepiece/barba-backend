@@ -66,3 +66,6 @@ pids
 
 # Diagnostic reports (https://nodejs.org/api/report.html)
 report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
+
+# Respaldo manual del port del servicio de PDF — no versionar
+backup-pdf-port/

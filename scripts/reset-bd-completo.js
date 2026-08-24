@@ -47,7 +47,9 @@ function ubicarMysqlCli() {
 }
 
 function correrBdSql(mysqlCli) {
-  const bdSqlPath = path.join(__dirname, '..', '..', 'bd', 'bd.sql');
+  // bd.sql vive en erp-backend/ (fuente única del esquema; ya no hay migraciones
+  // sueltas en bd/, esa carpeta quedó solo con documentación).
+  const bdSqlPath = path.join(__dirname, '..', 'bd.sql');
   console.log(`[1/2] Corriendo bd.sql (${bdSqlPath})...`);
   const sql = fs.readFileSync(bdSqlPath, 'utf8');
   const args = ['-h', process.env.DB_HOST || 'localhost', '-P', String(process.env.DB_PORT || 3306), '-u', process.env.DB_USER || 'root'];

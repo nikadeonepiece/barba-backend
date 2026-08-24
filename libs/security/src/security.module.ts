@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
-import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
+import { ThrottlerModule } from '@nestjs/throttler';
+import { GlobalThrottlerGuard } from './global-throttler.guard';
 
 @Module({
   imports: [
@@ -11,10 +12,13 @@ import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
     }]),
   ],
   providers: [
-    // Esto activa el escudo automáticamente en cualquier App que importe este módulo
+    // Esto activa el escudo automáticamente en cualquier App que importe este módulo.
+    // `GlobalThrottlerGuard` (no el `ThrottlerGuard` pelado) para que `/auth/login`
+    // quede a cargo de `LoginThrottlerGuard`, que cuenta por correo+IP — ver el
+    // comentario de esos dos archivos.
     {
       provide: APP_GUARD,
-      useClass: ThrottlerGuard,
+      useClass: GlobalThrottlerGuard,
     },
   ],
   exports: [ThrottlerModule], // Exportamos por si alguna App necesita configuración extra
