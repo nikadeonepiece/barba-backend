@@ -15,7 +15,7 @@ import { MailModule } from './core/mail/mail.module';
 import { AuthModule as LocalAuthModule } from './core/auth/auth.module';
 
 // --- Módulos de negocio: Vencimientos (Fase 1 + Fase 2) ---
-import { VencimientosModule } from './erp/transaccional/vencimientos/vencimientos.module';
+import { VencimientosModule } from './erp/vencimientos/vencimientos.module';
 import { ConfiguracionesModule } from './erp/configuracion/configuraciones.module';
 
 @Module({

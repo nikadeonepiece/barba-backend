@@ -3,7 +3,7 @@ import { CommonModule } from '@app/common';
 import { BuzonSunatController } from './buzon-sunat.controller';
 import { BuzonSunatService } from './buzon-sunat.service';
 import { SunatBuzonClient } from './sunat-buzon.client';
-import { CredencialesCryptoService } from '../../../comun/credenciales-crypto.service';
+import { CredencialesCryptoService } from '../../comun/credenciales-crypto.service';
 
 @Module({
   imports: [CommonModule],

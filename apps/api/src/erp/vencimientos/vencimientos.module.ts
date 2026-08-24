@@ -1,5 +1,5 @@
 import { Module } from '@nestjs/common';
-import { EmpresasModule } from '../../catalogos/empresas/empresas.module';
+import { EmpresasModule } from '../catalogos/empresas/empresas.module';
 import { DeclaracionesModule } from './declaraciones/declaraciones.module';
 import { SincronizacionSunatModule } from './sincronizacion-sunat/sincronizacion-sunat.module';
 import { AsistentesIaModule } from './asistentes-ia/asistentes-ia.module';
