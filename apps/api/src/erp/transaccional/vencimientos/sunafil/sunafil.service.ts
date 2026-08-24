@@ -3,7 +3,7 @@ import { InjectDataSource } from '@nestjs/typeorm';
 import { DataSource } from 'typeorm';
 import { createHash } from 'crypto';
 import { AuditoriaService } from '@app/common';
-import { CredencialesCryptoService } from '../credenciales-crypto.service';
+import { CredencialesCryptoService } from '../../../comun/credenciales-crypto.service';
 import { SunafilCasillaClient, FilaCasillaSunafil } from './sunafil-casilla.client';
 import { GestionarNotificacionSunafilDto } from './sunafil.dto';
 

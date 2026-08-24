@@ -3,7 +3,7 @@ import { DataSource } from 'typeorm';
 import { InjectDataSource } from '@nestjs/typeorm';
 import { AuditoriaService } from '@app/common';
 import { CreateEmpresaDto, UpdateEmpresaDto } from './dto/empresa.dto';
-import { CredencialesCryptoService } from '../credenciales-crypto.service';
+import { CredencialesCryptoService } from '../../comun/credenciales-crypto.service';
 import { GuardarCredencialesDto } from './dto/empresa.dto';
 import { SunatLoginClient } from './sunat-login.client';
 

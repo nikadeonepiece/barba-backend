@@ -6,7 +6,7 @@ import type { Response } from 'express';
 import { promises as fs } from 'fs';
 import { join } from 'path';
 import { AuditoriaService } from '@app/common';
-import { CredencialesCryptoService } from '../credenciales-crypto.service';
+import { CredencialesCryptoService } from '../../../comun/credenciales-crypto.service';
 import { GenerarDescargaSireDto } from './sire.dto';
 import { parsearArchivoSire } from './sire-parser.util';
 

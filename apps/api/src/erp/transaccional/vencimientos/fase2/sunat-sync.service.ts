@@ -2,7 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { DataSource } from 'typeorm';
 import { InjectDataSource } from '@nestjs/typeorm';
-import { CredencialesCryptoService } from '../credenciales-crypto.service';
+import { CredencialesCryptoService } from '../../../comun/credenciales-crypto.service';
 import { SunatSireClient } from './sunat-sire.client';
 import { SunatScrapingClient } from './sunat-scraping.client';
 

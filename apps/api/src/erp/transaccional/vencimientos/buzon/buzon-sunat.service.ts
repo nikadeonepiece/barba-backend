@@ -3,7 +3,7 @@ import { InjectDataSource } from '@nestjs/typeorm';
 import { DataSource } from 'typeorm';
 import { createHash } from 'crypto';
 import { AuditoriaService } from '@app/common';
-import { CredencialesCryptoService } from '../credenciales-crypto.service';
+import { CredencialesCryptoService } from '../../../comun/credenciales-crypto.service';
 import { SunatBuzonClient, FilaBuzonSunat } from './sunat-buzon.client';
 import { GestionarNotificacionBuzonDto } from './buzon.dto';
 
