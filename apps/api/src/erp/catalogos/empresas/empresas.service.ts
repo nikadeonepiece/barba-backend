@@ -10,7 +10,7 @@ import { SunatLoginClient } from './sunat-login.client';
 @Injectable()
 export class EmpresasService {
   constructor(
-    @InjectDataSource('DENTAONEPIECE_CONN') private dataSource: DataSource,
+    @InjectDataSource('ESTUDIOBARBA_CONN') private dataSource: DataSource,
     private auditoriaService: AuditoriaService,
     private credencialesCrypto: CredencialesCryptoService,
     private sunatLoginClient: SunatLoginClient,

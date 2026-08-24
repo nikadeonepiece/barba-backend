@@ -10,7 +10,7 @@ const COLS_ORDER_ALLOWED = ['id_guia', 'codigo', 'nombre'];
 @Injectable()
 export class GuiasSunatService {
   constructor(
-    @InjectDataSource('DENTAONEPIECE_CONN') private dataSource: DataSource,
+    @InjectDataSource('ESTUDIOBARBA_CONN') private dataSource: DataSource,
     private auditoriaService: AuditoriaService,
     private pdfService: PdfService,
   ) {}

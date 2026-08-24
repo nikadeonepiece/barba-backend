@@ -20,7 +20,7 @@ export class DeteccionInconsistenciasService {
   private readonly logger = new Logger(DeteccionInconsistenciasService.name);
 
   constructor(
-    @InjectDataSource('DENTAONEPIECE_CONN') private dataSource: DataSource,
+    @InjectDataSource('ESTUDIOBARBA_CONN') private dataSource: DataSource,
     private ia: AsistenteIaBaseService,
   ) {}
 

@@ -27,7 +27,7 @@ export class AuthService {
     private readonly usuariosService: UsuariosService,
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
-    @InjectDataSource('DENTAONEPIECE_CONN') private dataSource: DataSource,
+    @InjectDataSource('ESTUDIOBARBA_CONN') private dataSource: DataSource,
   ) {}
 
   private hashToken(tokenPlano: string): string {

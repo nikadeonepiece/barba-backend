@@ -19,7 +19,7 @@ describe('AuthService', () => {
         { provide: JwtService, useValue: {} },
         { provide: ConfigService, useValue: { get: () => undefined } },
         // Token de la conexion nombrada que usa @InjectDataSource.
-        { provide: getDataSourceToken('DENTAONEPIECE_CONN'), useValue: {} },
+        { provide: getDataSourceToken('ESTUDIOBARBA_CONN'), useValue: {} },
       ],
     }).compile();
 

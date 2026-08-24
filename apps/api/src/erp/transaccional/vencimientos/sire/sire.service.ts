@@ -43,7 +43,7 @@ const CARPETA_DESCARGAS = join(process.cwd(), 'storage-privado', 'sire');
 @Injectable()
 export class SireService {
   constructor(
-    @InjectDataSource('DENTAONEPIECE_CONN') private dataSource: DataSource,
+    @InjectDataSource('ESTUDIOBARBA_CONN') private dataSource: DataSource,
     private configService: ConfigService,
     private auditoriaService: AuditoriaService,
     private credencialesCrypto: CredencialesCryptoService,

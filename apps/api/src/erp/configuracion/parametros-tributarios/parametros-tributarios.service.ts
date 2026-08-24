@@ -12,7 +12,7 @@ import { UpsertParametroDto } from './dto/parametro-tributario.dto';
 @Injectable()
 export class ParametrosTributariosService {
   constructor(
-    @InjectDataSource('DENTAONEPIECE_CONN') private dataSource: DataSource,
+    @InjectDataSource('ESTUDIOBARBA_CONN') private dataSource: DataSource,
     private auditoriaService: AuditoriaService,
   ) {}
 

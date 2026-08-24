@@ -6,7 +6,7 @@ import { DataSource, QueryRunner } from 'typeorm';
 export class AuditoriaService {
   private readonly logger = new Logger(AuditoriaService.name);
 
-  constructor(@InjectDataSource('DENTAONEPIECE_CONN') private readonly db: DataSource) {}
+  constructor(@InjectDataSource('ESTUDIOBARBA_CONN') private readonly db: DataSource) {}
 
   // Guardado simple (fuera de transacciones)
   async registrar(

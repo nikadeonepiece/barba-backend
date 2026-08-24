@@ -8,7 +8,7 @@ import { CambiarPasswordDto } from './dto/cambiar-password.dto';
 
 @Injectable()
 export class UsuariosService {
-  constructor(@InjectDataSource('DENTAONEPIECE_CONN') private dataSource: DataSource, private auditoriaService: AuditoriaService) {}
+  constructor(@InjectDataSource('ESTUDIOBARBA_CONN') private dataSource: DataSource, private auditoriaService: AuditoriaService) {}
 
   async findByEmail(correo: string) {
     const [data] = await this.dataSource.query(`CALL sis_usuario_obtener_por_correo(?)`, [correo]);

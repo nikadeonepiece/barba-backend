@@ -8,7 +8,7 @@ import { PERMISSIONS_KEY } from '../decorators/require-permissions.decorator';
 export class PermissionsGuard implements CanActivate {
   constructor(
     private reflector: Reflector,
-    @InjectDataSource('DENTAONEPIECE_CONN') private dataSource: DataSource
+    @InjectDataSource('ESTUDIOBARBA_CONN') private dataSource: DataSource
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {

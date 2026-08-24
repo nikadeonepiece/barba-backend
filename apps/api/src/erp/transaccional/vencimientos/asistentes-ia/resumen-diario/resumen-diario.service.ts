@@ -26,7 +26,7 @@ export class ResumenDiarioService {
   private readonly logger = new Logger(ResumenDiarioService.name);
 
   constructor(
-    @InjectDataSource('DENTAONEPIECE_CONN') private dataSource: DataSource,
+    @InjectDataSource('ESTUDIOBARBA_CONN') private dataSource: DataSource,
     private ia: AsistenteIaBaseService,
   ) {}
 

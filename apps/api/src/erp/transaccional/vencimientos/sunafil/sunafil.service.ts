@@ -37,7 +37,7 @@ export class SunafilService {
   private readonly logger = new Logger(SunafilService.name);
 
   constructor(
-    @InjectDataSource('DENTAONEPIECE_CONN') private dataSource: DataSource,
+    @InjectDataSource('ESTUDIOBARBA_CONN') private dataSource: DataSource,
     private auditoriaService: AuditoriaService,
     private credencialesCrypto: CredencialesCryptoService,
     private casillaClient: SunafilCasillaClient,

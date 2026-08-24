@@ -8,7 +8,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
     ConfigModule.forRoot({ isGlobal: true }),
 
     TypeOrmModule.forRootAsync({
-      name: 'DENTAONEPIECE_CONN',
+      name: 'ESTUDIOBARBA_CONN',
       imports: [ConfigModule],
       useFactory: (config: ConfigService) => ({
         type: 'mysql',

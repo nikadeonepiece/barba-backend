@@ -7,7 +7,7 @@ import { CreateRolDto } from './rol.dto';
 @Injectable()
 export class SeguridadService {
   constructor(
-    @InjectDataSource('DENTAONEPIECE_CONN') private dataSource: DataSource,
+    @InjectDataSource('ESTUDIOBARBA_CONN') private dataSource: DataSource,
     private readonly auditoriaService: AuditoriaService
   ) {}
 

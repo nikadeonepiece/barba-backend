@@ -20,7 +20,7 @@ const TIPO_LABEL: Record<string, string> = {
 @Injectable()
 export class DeclaracionesService {
   constructor(
-    @InjectDataSource('DENTAONEPIECE_CONN') private dataSource: DataSource,
+    @InjectDataSource('ESTUDIOBARBA_CONN') private dataSource: DataSource,
     private auditoriaService: AuditoriaService,
     private pdfService: PdfService,
   ) {}

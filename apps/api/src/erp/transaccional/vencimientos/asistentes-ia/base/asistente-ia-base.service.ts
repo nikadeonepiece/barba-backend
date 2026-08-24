@@ -28,7 +28,7 @@ export class AsistenteIaBaseService {
   private readonly logger = new Logger(AsistenteIaBaseService.name);
   private client: Anthropic | null = null;
 
-  constructor(@InjectDataSource('DENTAONEPIECE_CONN') private dataSource: DataSource) {
+  constructor(@InjectDataSource('ESTUDIOBARBA_CONN') private dataSource: DataSource) {
     if (process.env.ANTHROPIC_API_KEY) {
       this.client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
     }

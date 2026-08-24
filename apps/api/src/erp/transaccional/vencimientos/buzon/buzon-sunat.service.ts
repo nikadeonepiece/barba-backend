@@ -25,7 +25,7 @@ export class BuzonSunatService {
   private readonly logger = new Logger(BuzonSunatService.name);
 
   constructor(
-    @InjectDataSource('DENTAONEPIECE_CONN') private dataSource: DataSource,
+    @InjectDataSource('ESTUDIOBARBA_CONN') private dataSource: DataSource,
     private auditoriaService: AuditoriaService,
     private credencialesCrypto: CredencialesCryptoService,
     private buzonClient: SunatBuzonClient,
