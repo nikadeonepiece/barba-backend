@@ -2,7 +2,7 @@ import { Controller, Get, Query, UseGuards, ParseIntPipe, Req } from '@nestjs/co
 import { JwtAuthGuard, PermissionsGuard, RequirePermissions } from '@app/auth';
 import { ResumenDiarioService } from './resumen-diario.service';
 
-@Controller('vencimientos/fase3/resumen-diario')
+@Controller('vencimientos/asistentes-ia/resumen-diario')
 @UseGuards(JwtAuthGuard, PermissionsGuard)
 export class ResumenDiarioController {
   constructor(private readonly service: ResumenDiarioService) {}

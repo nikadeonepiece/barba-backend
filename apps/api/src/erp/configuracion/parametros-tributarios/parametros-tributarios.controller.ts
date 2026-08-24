@@ -3,7 +3,7 @@ import { JwtAuthGuard, PermissionsGuard, RequirePermissions } from '@app/auth';
 import { ParametrosTributariosService } from './parametros-tributarios.service';
 import { UpsertParametroDto } from './dto/parametro-tributario.dto';
 
-@Controller('vencimientos/fase3/parametros-tributarios')
+@Controller('configuraciones/parametros-tributarios')
 @UseGuards(JwtAuthGuard, PermissionsGuard)
 export class ParametrosTributariosController {
   constructor(private readonly service: ParametrosTributariosService) {}

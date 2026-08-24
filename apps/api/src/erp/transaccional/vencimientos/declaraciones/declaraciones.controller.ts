@@ -21,7 +21,7 @@ export class DeclaracionesController {
   constructor(private readonly declaracionesService: DeclaracionesService) {}
 
   @RequirePermissions('VENCIMIENTOS_TRIBUTARIO', 'ver_vencimiento_tributario')
-  @Get('semaforo')
+  @Get('control-declaraciones')
   semaforo(@Query('anio', ParseIntPipe) anio: number, @Query('mes', ParseIntPipe) mes: number) {
     return this.declaracionesService.semaforo(anio, mes, TIPOS_TRIBUTARIO);
   }
@@ -36,13 +36,13 @@ export class DeclaracionesController {
   }
 
   @RequirePermissions('VENCIMIENTOS_LABORAL', 'ver_vencimiento_laboral')
-  @Get('laboral/semaforo')
+  @Get('laboral/control-declaraciones')
   semaforoLaboral(@Query('anio', ParseIntPipe) anio: number, @Query('mes', ParseIntPipe) mes: number) {
     return this.declaracionesService.semaforo(anio, mes, TIPOS_LABORAL);
   }
 
   @RequirePermissions('VENCIMIENTOS_TRIBUTARIO', 'exportar_pdf_vencimientos')
-  @Get('semaforo/pdf')
+  @Get('control-declaraciones/pdf')
   async semaforoPdf(
     @Query('anio', ParseIntPipe) anio: number,
     @Query('mes', ParseIntPipe) mes: number,
@@ -58,7 +58,7 @@ export class DeclaracionesController {
   }
 
   @RequirePermissions('VENCIMIENTOS_LABORAL', 'exportar_pdf_vencimientos_laboral')
-  @Get('laboral/semaforo/pdf')
+  @Get('laboral/control-declaraciones/pdf')
   async semaforoPdfLaboral(
     @Query('anio', ParseIntPipe) anio: number,
     @Query('mes', ParseIntPipe) mes: number,

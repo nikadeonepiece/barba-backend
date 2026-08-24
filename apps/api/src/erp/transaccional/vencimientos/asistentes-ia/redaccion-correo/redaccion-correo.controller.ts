@@ -3,7 +3,7 @@ import { JwtAuthGuard, PermissionsGuard, RequirePermissions } from '@app/auth';
 import { RedaccionCorreoService } from './redaccion-correo.service';
 import { RedactarCorreoDto } from './dto/redaccion-correo.dto';
 
-@Controller('vencimientos/fase3/redaccion-correo')
+@Controller('vencimientos/asistentes-ia/redaccion-correo')
 @UseGuards(JwtAuthGuard, PermissionsGuard)
 export class RedaccionCorreoController {
   constructor(private readonly service: RedaccionCorreoService) {}

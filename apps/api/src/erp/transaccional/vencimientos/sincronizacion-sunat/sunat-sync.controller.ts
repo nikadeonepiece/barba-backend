@@ -15,7 +15,7 @@ const TIPOS_LABORAL = ['PLANILLA'];
  * o @nestjs/schedule con @Cron una vez instalado). No requiere que nadie
  * esté mirando la pantalla, solo que algo llame este endpoint a la hora fijada.
  */
-@Controller('vencimientos/fase2')
+@Controller('vencimientos/sincronizacion-sunat')
 @UseGuards(JwtAuthGuard, PermissionsGuard)
 export class SunatSyncController {
   constructor(private readonly sunatSyncService: SunatSyncService) {}

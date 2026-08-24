@@ -4,7 +4,7 @@ import { chromium } from 'playwright';
 /**
  * Abre una sesión de "Mis Declaraciones y Pagos" YA LOGUEADA en un Chromium
  * visible (`headless: false`), para que el usuario siga navegando a mano —
- * a diferencia de `SunatScrapingClient` (vencimientos/fase2), que es headless
+ * a diferencia de `SunatScrapingClient` (vencimientos/sincronizacion-sunat), que es headless
  * y cierra el navegador al terminar. Selectores y advertencias del flujo de
  * login copiados de ahí (ver ese archivo para el detalle del porqué de cada
  * paso — multi-ventana + iframe OAuth2, no una página plana).

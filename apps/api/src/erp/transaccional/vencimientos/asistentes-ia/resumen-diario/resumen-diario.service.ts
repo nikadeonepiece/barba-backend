@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { DataSource } from 'typeorm';
 import { InjectDataSource } from '@nestjs/typeorm';
-import { AsistenteIaBaseService } from '../ia/asistente-ia-base.service';
+import { AsistenteIaBaseService } from '../base/asistente-ia-base.service';
 
 interface FilaSemaforo {
   razon_social: string;

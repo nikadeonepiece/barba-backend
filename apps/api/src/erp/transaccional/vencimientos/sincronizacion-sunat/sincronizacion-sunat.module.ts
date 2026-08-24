@@ -10,4 +10,4 @@ import { CredencialesCryptoService } from '../../../comun/credenciales-crypto.se
   providers: [SunatSyncService, SunatSireClient, SunatScrapingClient, CredencialesCryptoService],
   exports: [SunatSyncService],
 })
-export class Fase2Module {}
+export class SincronizacionSunatModule {}

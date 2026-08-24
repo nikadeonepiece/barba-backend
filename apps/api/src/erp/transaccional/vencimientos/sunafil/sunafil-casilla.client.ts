@@ -24,7 +24,7 @@ export interface FilaCasillaSunafil {
  * no hay endpoints REST/JSON, no hay portal de desarrolladores, no hay
  * client_id/secret como sí lo hay para SIRE. Reproducir el protocolo JSF a mano
  * (postbacks con ViewState + ajax parcial) sería MÁS frágil que manejar el
- * navegador, por eso Playwright, igual que `SunatScrapingClient` de fase2.
+ * navegador, por eso Playwright, igual que `SunatScrapingClient` de sincronizacion-sunat.
  *
  * ✅ LOGIN VERIFICADO CONTRA LOS SERVIDORES REALES (20/08/2026, leyendo el HTML
  * servido — sin usar todavía una Clave SOL de cliente):
@@ -90,7 +90,7 @@ export class SunafilCasillaClient {
   }
 
   private static readonly SELECTORES = {
-    // --- Login SOL: mismos ids que ya usa fase2, servidos por api-seguridad.sunat.gob.pe ---
+    // --- Login SOL: mismos ids que ya usa sincronizacion-sunat, servidos por api-seguridad.sunat.gob.pe ---
     INPUT_RUC: '#txtRuc',
     INPUT_USUARIO: '#txtUsuario',
     INPUT_CLAVE: '#txtContrasena',
@@ -130,7 +130,7 @@ export class SunafilCasillaClient {
       await page.goto(this.construirUrlLogin(), { waitUntil: 'domcontentloaded', timeout: 30_000 });
 
       // El formulario de SOL puede venir en la página o dentro de un iframe según
-      // cómo SUNAT sirva la pantalla ese día — fase2 lo encontró en un iframe
+      // cómo SUNAT sirva la pantalla ese día — sincronizacion-sunat lo encontró en un iframe
       // llegando desde sol.html; entrando directo suele venir plano. Se resuelve
       // el contexto en vez de asumir uno de los dos.
       const contexto = await this.ubicarContextoLogin(page, s.INPUT_RUC);

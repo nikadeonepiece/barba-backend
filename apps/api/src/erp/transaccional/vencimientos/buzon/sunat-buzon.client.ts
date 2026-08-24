@@ -27,7 +27,7 @@ export interface FilaBuzonSunat {
  * scope OAuth2 para esto. Lo único programático que ofrece SUNAT es el AVISO por
  * correo (gob.pe/7878), que solo dice "tienes una notificación" — sin contenido ni
  * PDF — así que no sirve para poblar la bandeja. Por eso Playwright, igual que
- * `SunatScrapingClient` (fase2) y `SunafilCasillaClient`.
+ * `SunatScrapingClient` (sincronizacion-sunat) y `SunafilCasillaClient`.
  *
  * ✅ VERIFICADO CONTRA LOS SERVIDORES REALES (21/08/2026, sin usar Clave SOL de
  * ningún cliente): la app del buzón está desplegada en WebLogic bajo
@@ -77,7 +77,7 @@ export class SunatBuzonClient {
   private readonly logger = new Logger(SunatBuzonClient.name);
 
   private static readonly SELECTORES = {
-    // --- Login: idénticos a fase2, verificados en vivo contra SUNAT ---
+    // --- Login: idénticos a los de sincronizacion-sunat, verificados en vivo contra SUNAT ---
     LOGIN_URL: 'https://www.sunat.gob.pe/sol.html',
     LINK_DECLARA_SIMPLIFICADA: 'a[href*="declaraSimplificadaNueva"]',
     BOTON_POR_RUC: '#btnPorRuc',
@@ -127,7 +127,7 @@ export class SunatBuzonClient {
     const browser: Browser = await chromium.launch({ headless: true, timeout: 30_000 });
     try {
       // Sin un User-Agent de navegador real el WAF de SUNAT responde "Request
-      // Rejected" antes de servir nada (verificado en vivo en fase2).
+      // Rejected" antes de servir nada (verificado en vivo en sincronizacion-sunat).
       const context = await browser.newContext({
         userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
         viewport: { width: 1366, height: 768 },

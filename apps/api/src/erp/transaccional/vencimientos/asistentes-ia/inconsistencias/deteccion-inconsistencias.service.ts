@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { DataSource } from 'typeorm';
 import { InjectDataSource } from '@nestjs/typeorm';
-import { AsistenteIaBaseService } from '../ia/asistente-ia-base.service';
+import { AsistenteIaBaseService } from '../base/asistente-ia-base.service';
 
 const SYSTEM_PROMPT = `Eres el asistente de detección de inconsistencias de un estudio contable en Perú.
 Recibes una lista YA CALCULADA de alertas detectadas por código (saldo a favor sin usar hace meses,

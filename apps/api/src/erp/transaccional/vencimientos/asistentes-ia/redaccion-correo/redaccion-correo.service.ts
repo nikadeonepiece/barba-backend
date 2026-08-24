@@ -1,5 +1,5 @@
 import { Injectable, BadRequestException } from '@nestjs/common';
-import { AsistenteIaBaseService } from '../ia/asistente-ia-base.service';
+import { AsistenteIaBaseService } from '../base/asistente-ia-base.service';
 import { RedactarCorreoDto } from './dto/redaccion-correo.dto';
 
 const SYSTEM_PROMPT = `Eres Lumen, un asistente de redacción de correos para un estudio contable peruano

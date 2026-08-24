@@ -19,7 +19,7 @@ interface EmpresaParaVerificar {
  * FASE 2 — job de verificación automática. Pensado para correr una vez al día
  * (ej. 6-7am) antes de que el equipo llegue a la oficina, vía cron externo
  * (Windows Task Scheduler / crontab del hosting) que llame al endpoint
- * POST /vencimientos/fase2/sincronizar, o instalando @nestjs/schedule y
+ * POST /vencimientos/sincronizacion-sunat/sincronizar, o instalando @nestjs/schedule y
  * decorando `ejecutar()` con @Cron() una vez que Fase 2 esté lista para producción.
  *
  * Regla de oro (definida en la conversación con el usuario): si falla la
