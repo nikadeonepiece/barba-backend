@@ -4,7 +4,7 @@ export class MarcarDeclaracionDto {
   @IsInt() @IsPositive()
   id_empresa!: number;
 
-  @IsInt()
+  @IsInt() @Min(2000) @Max(2100)
   periodo_anio!: number;
 
   @IsInt()
@@ -26,7 +26,7 @@ export class MarcarDeclaracionDto {
 }
 
 export class UpsertCronogramaDto {
-  @IsInt()
+  @IsInt() @Min(2000) @Max(2100)
   anio!: number;
 
   @IsInt()
@@ -50,7 +50,7 @@ export class RegistrarSaldoFavorDto {
   @IsInt() @IsPositive()
   id_empresa!: number;
 
-  @IsInt()
+  @IsInt() @Min(2000) @Max(2100)
   periodo_anio!: number;
 
   @IsInt()
@@ -72,7 +72,7 @@ export class RegistrarCortePreliminarDto {
   @IsInt() @IsPositive()
   id_empresa!: number;
 
-  @IsInt()
+  @IsInt() @Min(2000) @Max(2100)
   periodo_anio!: number;
 
   @IsInt()

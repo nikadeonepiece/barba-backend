@@ -77,7 +77,7 @@ export class DeclaracionesController {
   @Post('laboral/declaraciones/marcar-manual')
   marcarManualLaboral(@Body() dto: MarcarDeclaracionDto, @Req() req: any) {
     if (!TIPOS_LABORAL.includes(dto.tipo_obligacion)) {
-      throw new BadRequestException('Este endpoint solo admite la obligación PLANILLA');
+      throw new BadRequestException('Este endpoint solo admite obligaciones laborales (PLANILLA, AFP_NET)');
     }
     return this.declaracionesService.marcarManual(dto, req.user.userId);
   }
