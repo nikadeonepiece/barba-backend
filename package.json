@@ -20,7 +20,7 @@
     "test:e2e": "jest --config ./apps/erp-backend/test/jest-e2e.json"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.32.1",
+    "@anthropic-ai/sdk": "^0.120.0",
     "@nestjs-modules/mailer": "^2.3.4",
     "@nestjs/cache-manager": "^3.1.0",
     "@nestjs/common": "^11.0.1",
