@@ -21,6 +21,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.120.0",
+    "@foliojs-fork/fontkit": "^1.9.2",
     "@nestjs-modules/mailer": "^2.3.4",
     "@nestjs/cache-manager": "^3.1.0",
     "@nestjs/common": "^11.0.1",
@@ -43,6 +44,9 @@
     "dotenv": "^17.4.1",
     "exceljs": "^4.4.0",
     "helmet": "^8.1.0",
+    "html-to-pdfmake": "^2.5.34",
+    "jsdom": "^30.0.1",
+    "juice": "^11.1.1",
     "multer": "^2.0.2",
     "mysql2": "^3.22.0",
     "nest-winston": "^1.10.2",
@@ -116,7 +120,8 @@
       "^@app/common(|/.*)$": "<rootDir>/libs/common/src/$1",
       "^@app/database(|/.*)$": "<rootDir>/libs/database/src/$1",
       "^@app/logger(|/.*)$": "<rootDir>/libs/logger/src/$1",
-      "^@app/security(|/.*)$": "<rootDir>/libs/security/src/$1"
+      "^@app/security(|/.*)$": "<rootDir>/libs/security/src/$1",
+      "^jsdom$": "<rootDir>/test/jsdom.stub.js"
     }
   },
   "overrides": {
