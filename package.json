@@ -118,5 +118,10 @@
       "^@app/logger(|/.*)$": "<rootDir>/libs/logger/src/$1",
       "^@app/security(|/.*)$": "<rootDir>/libs/security/src/$1"
     }
+  },
+  "overrides": {
+    "uuid": "^11.1.1",
+    "linkify-it": "^5.0.2",
+    "nodemailer": "^9.0.5"
   }
 }
