@@ -35,7 +35,7 @@ export class AuditoriaService {
       
       this.logger.log(`✅ Auditoría guardada con éxito: ${accion} en ${nombreTabla}`);
     } catch (error) {
-      this.logger.error(`❌ Error al intentar guardar auditoría en ${nombreTabla} (ID: ${idRegistro})`, error?.stack);
+      this.logger.error(`❌ Error al intentar guardar auditoría en ${nombreTabla} (ID: ${idRegistro})`, error instanceof Error ? error.stack : String(error));
     }
   }
 

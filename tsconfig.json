@@ -13,7 +13,6 @@
     "target": "ES2023",
     "sourceMap": true,
     "outDir": "./dist",
-    "baseUrl": "./",
     "incremental": true,
     "skipLibCheck": true,
     "strictNullChecks": true,
@@ -52,6 +51,10 @@
       "@app/security/*": [
         "libs/security/src/*"
       ]
-    }
+    },
+    "rootDir": "./",
+    "strictPropertyInitialization": false,
+    "baseUrl": "./",
+    "ignoreDeprecations": "6.0"
   }
 }
