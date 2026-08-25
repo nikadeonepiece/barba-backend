@@ -13,6 +13,14 @@ import { SincronizarBuzonSunatDto, GestionarNotificacionBuzonDto } from './buzon
 export class BuzonSunatController {
   constructor(private readonly service: BuzonSunatService) {}
 
+  // Estáticas primero (Nest resuelve por orden de declaración): 'resumen' antes de
+  // cualquier ':id', o un día una ruta dinámica se la comería como parámetro.
+  @Get('resumen')
+  @RequirePermissions('VENCIMIENTOS_TRIBUTARIO', 'ver_buzon_sunat')
+  resumen(@Query('id_empresa', ParseIntPipe) idEmpresa: number) {
+    return this.service.resumen(idEmpresa);
+  }
+
   @Get('notificaciones')
   @RequirePermissions('VENCIMIENTOS_TRIBUTARIO', 'ver_buzon_sunat')
   listar(@Query('id_empresa', ParseIntPipe) idEmpresa: number, @Query() query: any) {

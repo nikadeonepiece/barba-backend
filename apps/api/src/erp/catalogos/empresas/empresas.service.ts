@@ -3,7 +3,7 @@ import { DataSource } from 'typeorm';
 import { InjectDataSource } from '@nestjs/typeorm';
 import { AuditoriaService } from '@app/common';
 import { CreateEmpresaDto, UpdateEmpresaDto } from './dto/empresa.dto';
-import { CredencialesCryptoService } from '../../comun/credenciales-crypto.service';
+import { CredencialesCryptoService } from '@app/security';
 import { GuardarCredencialesDto } from './dto/empresa.dto';
 import { SunatLoginClient } from './sunat-login.client';
 
@@ -109,10 +109,19 @@ export class EmpresasService {
    */
   async guardarCredenciales(id: number, dto: GuardarCredencialesDto, userId: number) {
     await this.findOne(id);
-    const solUsuario = dto.sunat_sol_usuario ? this.credencialesCrypto.cifrar(dto.sunat_sol_usuario) : null;
-    const solPassword = dto.sunat_sol_password ? this.credencialesCrypto.cifrar(dto.sunat_sol_password) : null;
-    const apiClientId = dto.sunat_api_client_id ? this.credencialesCrypto.cifrar(dto.sunat_api_client_id) : null;
-    const apiClientSecret = dto.sunat_api_client_secret ? this.credencialesCrypto.cifrar(dto.sunat_api_client_secret) : null;
+    // .trim(): el client_id/secret y el usuario SOL se pegan a mano desde el portal de
+    // SUNAT, y un espacio o salto de línea al final viaja tal cual hasta el OAuth de
+    // SIRE — SUNAT responde 401 "cliente no autorizado" sin decir por qué. Se limpia acá.
+    const limpiar = (v?: string) => { const t = v?.trim(); return t ? t : null; };
+    const solUsuarioTxt = limpiar(dto.sunat_sol_usuario);
+    const solPasswordTxt = limpiar(dto.sunat_sol_password);
+    const apiClientIdTxt = limpiar(dto.sunat_api_client_id);
+    const apiClientSecretTxt = limpiar(dto.sunat_api_client_secret);
+
+    const solUsuario = solUsuarioTxt ? this.credencialesCrypto.cifrar(solUsuarioTxt) : null;
+    const solPassword = solPasswordTxt ? this.credencialesCrypto.cifrar(solPasswordTxt) : null;
+    const apiClientId = apiClientIdTxt ? this.credencialesCrypto.cifrar(apiClientIdTxt) : null;
+    const apiClientSecret = apiClientSecretTxt ? this.credencialesCrypto.cifrar(apiClientSecretTxt) : null;
 
     await this.dataSource.query(
       `CALL empresa_credenciales_guardar(?, ?, ?, ?, ?)`,

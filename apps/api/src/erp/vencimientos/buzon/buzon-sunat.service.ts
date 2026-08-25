@@ -3,7 +3,7 @@ import { InjectDataSource } from '@nestjs/typeorm';
 import { DataSource } from 'typeorm';
 import { createHash } from 'crypto';
 import { AuditoriaService } from '@app/common';
-import { CredencialesCryptoService } from '../../comun/credenciales-crypto.service';
+import { CredencialesCryptoService } from '@app/security';
 import { SunatBuzonClient, FilaBuzonSunat } from './sunat-buzon.client';
 import { GestionarNotificacionBuzonDto } from './buzon.dto';
 
@@ -43,7 +43,10 @@ export class BuzonSunatService {
     if (query.estado_gestion) { where.push('estado_gestion = ?'); params.push(query.estado_gestion); }
     if (query.bandeja) { where.push('bandeja = ?'); params.push(query.bandeja); }
     if (query.desde) { where.push('fecha_deposito >= ?'); params.push(query.desde); }
-    if (query.hasta) { where.push('fecha_deposito <= ?'); params.push(query.hasta); }
+    // `fecha_deposito` es DATETIME y el filtro llega como fecha sola (yyyy-mm-dd).
+    // Comparada tal cual, '2026-06-11' vale '2026-06-11 00:00:00' y deja fuera todo
+    // lo depositado ESE día — justo el día que el usuario quiso incluir.
+    if (query.hasta) { where.push('fecha_deposito <= ?'); params.push(this.finDelDia(query.hasta)); }
     if (query.buscar) {
       where.push('(asunto LIKE ? OR tipo_documento LIKE ? OR numero_documento LIKE ? OR codigo_notificacion LIKE ?)');
       const like = `%${query.buscar}%`;
@@ -80,6 +83,47 @@ export class BuzonSunatService {
     );
     if (!row) throw new NotFoundException('Notificación no encontrada');
     return row;
+  }
+
+  /**
+   * Cabecera de la pantalla. El dato que importa no son los conteos sino
+   * `ultima_sincronizacion`: un buzón vacío porque nunca se leyó, o porque la
+   * lectura falló, se ve idéntico a un buzón realmente vacío — y confundirlos es
+   * perderse una cobranza coactiva. `bandejas` alimenta el filtro sin inventar
+   * valores: son las carpetas que este buzón realmente devolvió.
+   */
+  async resumen(idEmpresa: number) {
+    const [[conteos], [ultima], bandejas] = await Promise.all([
+      this.dataSource.query(
+        `SELECT
+           COUNT(*) AS total,
+           COALESCE(SUM(estado_gestion = 'NUEVA'), 0) AS nuevas,
+           COALESCE(SUM(estado_gestion = 'EN_REVISION'), 0) AS en_revision
+         FROM sunat_buzon_notificacion WHERE id_empresa = ? AND estado_registro = 'ACTIVO'`,
+        [idEmpresa],
+      ),
+      this.dataSource.query(
+        `SELECT id_sincronizacion, estado, cantidad_leidas, cantidad_nuevas, mensaje_error, fecha_inicio, fecha_fin
+         FROM sunat_buzon_sincronizacion
+         WHERE id_empresa = ? AND estado_registro = 'ACTIVO'
+         ORDER BY id_sincronizacion DESC LIMIT 1`,
+        [idEmpresa],
+      ),
+      this.dataSource.query(
+        `SELECT DISTINCT bandeja FROM sunat_buzon_notificacion
+         WHERE id_empresa = ? AND estado_registro = 'ACTIVO' AND bandeja IS NOT NULL AND bandeja <> ''
+         ORDER BY bandeja`,
+        [idEmpresa],
+      ),
+    ]);
+
+    return {
+      total: Number(conteos?.total ?? 0),
+      nuevas: Number(conteos?.nuevas ?? 0),
+      en_revision: Number(conteos?.en_revision ?? 0),
+      ultima_sincronizacion: ultima ?? null,
+      bandejas: bandejas.map((b: { bandeja: string }) => b.bandeja),
+    };
   }
 
   async listarSincronizaciones(idEmpresa: number, query: any) {
@@ -307,6 +351,12 @@ export class BuzonSunatService {
     // original igual queda guardado en datos_crudos_json para revisarlo.
     const fallback = new Date(texto);
     return Number.isNaN(fallback.getTime()) ? null : fallback;
+  }
+
+  /** 'yyyy-mm-dd' -> 'yyyy-mm-dd 23:59:59'. Si ya trae hora, se respeta tal cual. */
+  private finDelDia(fecha: string): string {
+    const texto = String(fecha).trim();
+    return /^d{4}-d{2}-d{2}$/.test(texto) ? `${texto} 23:59:59` : texto;
   }
 
   private recortar(texto: string | null, max: number): string | null {

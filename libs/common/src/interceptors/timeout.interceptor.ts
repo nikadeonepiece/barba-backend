@@ -12,12 +12,21 @@ const TIMEOUT_MS_DEFAULT = 15_000;
 // scraping/consultas contra SUNAT (Playwright abre un navegador real, con pausa
 // entre empresas), descargas SIRE y los exports.
 const RUTAS_LARGAS: Array<{ patron: RegExp; ms: number }> = [
-  { patron: /\/vencimientos\/fase2\//i, ms: 180_000 },
+  // Playwright (navegador real contra SUNAT/SUNAFIL): login + navegación + descarga
+  // no entran en 15s ni de lejos. Los patrones tienen que coincidir con el prefijo
+  // REAL del @Controller(): si un módulo se renombra, hay que actualizarlos acá o
+  // vuelve a cortarse a los 15s con un 408 — le pasó a sincronizacion-sunat, que
+  // acá seguía listado con su nombre viejo (/vencimientos/fase2/).
+  { patron: /\/vencimientos\/sincronizacion-sunat\//i, ms: 180_000 },
   { patron: /\/vencimientos\/sire\//i, ms: 180_000 },
+  { patron: /\/vencimientos\/buzon-sunat\//i, ms: 180_000 },
   // Casilla SUNAFIL: no hay API, se lee el portal con Playwright pasando por el
   // OAuth2 de SUNAT — un login completo más la carga de la bandeja no entra en 15s.
   { patron: /\/vencimientos\/sunafil\//i, ms: 180_000 },
-  { patron: /\/vencimientos\/fase3\//i, ms: 60_000 },
+  // Abre la ventana de "Mis declaraciones" con Playwright (headless: false).
+  { patron: /\/abrir-mis-declaraciones/i, ms: 180_000 },
+  // Asistentes de IA: dependen de la latencia del modelo (antes /vencimientos/fase3/).
+  { patron: /\/vencimientos\/asistentes-ia\//i, ms: 60_000 },
   { patron: /\/exportar\//i, ms: 60_000 },
   { patron: /\/constancias\//i, ms: 60_000 },
 ];

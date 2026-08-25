@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { chromium, Browser } from 'playwright';
+import { chromium, Browser, Page } from 'playwright';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -151,6 +151,13 @@ export class SunatScrapingClient {
     periodoMes: number,
   ): Promise<ResultadoScrapingDeclaracion> {
     let browser: Browser | null = null;
+    // Se va reasignando a la página que está "en foco" en cada etapa para que el catch
+    // pueda volcar EXACTAMENTE la pantalla donde murió. Sin esto, un timeout de click
+    // solo dice qué selector faltó, no qué había en su lugar (y las pantallas de SUNAT
+    // que rompen esto — modal de datos de contacto, error de login, corte del WAF —
+    // se distinguen únicamente mirando el HTML).
+    let paginaActiva: Page | null = null;
+    let etapa = 'inicio';
     try {
       browser = await chromium.launch({ headless: true, timeout: 30_000 });
       // Verificado en vivo contra sunat.gob.pe: sin un User-Agent de navegador real,
@@ -163,8 +170,10 @@ export class SunatScrapingClient {
         locale: 'es-PE',
       });
       const page = await context.newPage();
+      paginaActiva = page;
       const s = SunatScrapingClient.SELECTORES;
 
+      etapa = 'menu-sol';
       await page.goto(s.LOGIN_URL, { waitUntil: 'domcontentloaded', timeout: 30_000 });
 
       // "Mis Declaraciones y Pagos" no navega — abre una ventana nueva vía JS.
@@ -173,6 +182,8 @@ export class SunatScrapingClient {
         page.click(s.LINK_DECLARA_SIMPLIFICADA),
       ]);
       const login = popup;
+      paginaActiva = login;
+      etapa = 'login';
       await login.waitForLoadState('domcontentloaded', { timeout: 20_000 });
 
       await login.click(s.BOTON_POR_RUC).catch(() => {}); // puede ya venir seleccionado por defecto
@@ -191,8 +202,14 @@ export class SunatScrapingClient {
       await login.waitForTimeout(2000); // margen para redirecciones OAuth2 posteriores al login
 
       const page2 = login; // a partir de aquí sigue en la misma ventana ya logueada
+      etapa = 'menu-interno';
 
       // Árbol de 3 niveles — cada click expande el siguiente nivel, no navega directo.
+      // ⚠️ `force: true` NO salta la espera del selector: solo se salta los chequeos de
+      // "actionability" (visible, estable, no tapado). Si el timeout revienta acá con
+      // `waiting for locator('text=Consultas')`, el texto NO está en el DOM — subir el
+      // timeout no cambia nada, la pantalla es otra (login fallido, modal de "Valida
+      // tus datos de contacto", o corte del WAF). Por eso el catch vuelca el HTML.
       await page2.click(s.MENU_CONSULTAS, { force: true });
       await page2.waitForTimeout(800);
       await page2.click(s.MENU_CONSULTAS_PRESENTACION_PAGO, { force: true });
@@ -200,6 +217,7 @@ export class SunatScrapingClient {
       await page2.click(s.MENU_CONSULTA_DECLARACIONES, { force: true });
       await page2.waitForTimeout(2000);
 
+      etapa = 'consulta';
       const frameConsulta = page2.frames().find((f) => f.url().includes(s.IFRAME_CONSULTA_URL_CONTIENE));
       if (!frameConsulta) throw new Error('No se encontró el iframe de "Consulta de Declaraciones y Pagos" — el portal pudo haber cambiado');
 
@@ -319,13 +337,37 @@ export class SunatScrapingClient {
         importePagado,
       };
     } catch (error: any) {
-      this.logger.error(`Scraping SUNAT falló para RUC ${ruc} (${tipoObligacion} ${periodoAnio}-${periodoMes}): ${error?.message}`);
+      const pista = await this.guardarDebug(ruc, etapa, paginaActiva);
+      this.logger.error(`Scraping SUNAT falló para RUC ${ruc} (${tipoObligacion} ${periodoAnio}-${periodoMes}) en la etapa "${etapa}": ${error?.message}`);
       throw new Error(
-        `No se pudo verificar en SUNAT (portal web): ${error?.message || 'error desconocido'}. ` +
+        `No se pudo verificar en SUNAT (portal web) en la etapa "${etapa}": ${error?.message || 'error desconocido'}. ` +
+        (pista ? `Pantalla en la que murió volcada en ${pista} (HTML + captura). ` : '') +
         `Si el portal cambió de diseño, revisar los selectores en sunat-scraping.client.ts.`,
       );
     } finally {
       await browser?.close().catch(() => {});
+    }
+  }
+
+  /**
+   * Vuelca la pantalla donde murió el scraping (HTML + captura PNG) a
+   * `storage-privado/debug-scraping-sunat/`, igual que hace `sunat-buzon.client.ts`.
+   * Va en storage-privado y NO en uploads/ porque el HTML de una sesión SOL logueada
+   * trae datos del contribuyente, y uploads/ se sirve público sin login (ver main.ts).
+   * Nunca lanza: si el volcado falla, el error original es lo que tiene que llegar.
+   */
+  private async guardarDebug(ruc: string, etapa: string, page: Page | null): Promise<string | null> {
+    if (!page || page.isClosed()) return null;
+    try {
+      const carpeta = path.join(process.cwd(), 'storage-privado', 'debug-scraping-sunat');
+      fs.mkdirSync(carpeta, { recursive: true });
+      const base = `${etapa}-${ruc}`;
+      const html = await page.content().catch(() => '');
+      if (html) fs.writeFileSync(path.join(carpeta, `${base}.html`), html, 'utf8');
+      await page.screenshot({ path: path.join(carpeta, `${base}.png`), fullPage: true }).catch(() => {});
+      return `storage-privado/debug-scraping-sunat/${base}.html`;
+    } catch {
+      return null;
     }
   }
 }

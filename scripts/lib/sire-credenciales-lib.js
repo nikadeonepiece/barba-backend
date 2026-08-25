@@ -89,6 +89,19 @@ async function extraerCredencialesSire(empresa) {
     await login.waitForLoadState('domcontentloaded', { timeout: 15_000 }).catch(() => {});
     await login.waitForTimeout(1500);
 
+    // Confirmado en vivo (25/08/2026): tras el login por "tramiteConsulta" la ventana
+    // se queda a veces clavada en la página puente de api-seguridad ("Bienvenidos a
+    // SUNAT", 157 bytes con el `code` OAuth en la URL) y nunca redirige sola al menú.
+    // El síntoma era engañoso: fallaba más abajo con "no se encontró Credenciales de
+    // API SUNAT" cuando en realidad nunca había llegado al menú. La sesión ya está en
+    // las cookies, así que entrar por URL directa al menú es determinístico.
+    if (!login.url().includes('e-menu.sunat.gob.pe')) {
+      await login.goto('https://e-menu.sunat.gob.pe/cl-ti-itmenu/MenuInternet.htm', {
+        waitUntil: 'domcontentloaded', timeout: 30_000,
+      }).catch(() => {});
+      await login.waitForTimeout(3000);
+    }
+
     const opcionesCredenciales = login.locator('text=Credenciales de API SUNAT');
     const totalOpciones = await opcionesCredenciales.count();
     let clickeadoCredenciales = false;

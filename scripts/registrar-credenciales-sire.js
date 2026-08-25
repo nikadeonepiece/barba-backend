@@ -167,6 +167,21 @@ async function main() {
       if (c) fs.writeFileSync(path.join(CARPETA_DEBUG, `04-frame-${i}.html`), c);
     }
 
+    // Confirmado en vivo (25/08/2026): tras el login por "tramiteConsulta" la ventana
+    // se queda a veces clavada en la página puente de api-seguridad ("Bienvenidos a
+    // SUNAT", 157 bytes con el `code` OAuth en la URL) y nunca redirige sola al menú.
+    // El síntoma era engañoso: fallaba más abajo con "no se encontró Credenciales de
+    // API SUNAT" cuando en realidad nunca había llegado al menú. La sesión ya está en
+    // las cookies, así que entrar por URL directa al menú es determinístico.
+    if (!login.url().includes('e-menu.sunat.gob.pe')) {
+      console.log('La ventana quedó en la página puente de api-seguridad — entrando al menú por URL directa');
+      await login.goto('https://e-menu.sunat.gob.pe/cl-ti-itmenu/MenuInternet.htm', {
+        waitUntil: 'domcontentloaded', timeout: 30_000,
+      }).catch(() => {});
+      await login.waitForTimeout(3000);
+      await screenshot(login, '04b-menu-directo');
+    }
+
     // Confirmado en vivo (16/08/2026): tras cerrar los popups, aterriza en el menú
     // general de SUNAT Operaciones en Línea con "Credenciales de API SUNAT" YA
     // visible directo en la lista (no hace falta pasar por la pestaña "Empresas").

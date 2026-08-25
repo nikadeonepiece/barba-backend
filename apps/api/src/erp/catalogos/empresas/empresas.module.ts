@@ -1,7 +1,7 @@
 import { Module } from '@nestjs/common';
 import { EmpresasService } from './empresas.service';
 import { EmpresasController } from './empresas.controller';
-import { CredencialesCryptoService } from '../../comun/credenciales-crypto.service';
+import { CredencialesCryptoService } from '@app/security';
 import { SunatLoginClient } from './sunat-login.client';
 
 @Module({

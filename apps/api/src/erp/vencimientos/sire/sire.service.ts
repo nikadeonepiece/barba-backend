@@ -6,7 +6,7 @@ import type { Response } from 'express';
 import { promises as fs } from 'fs';
 import { join } from 'path';
 import { AuditoriaService } from '@app/common';
-import { CredencialesCryptoService } from '../../comun/credenciales-crypto.service';
+import { CredencialesCryptoService } from '@app/security';
 import { GenerarDescargaSireDto } from './sire.dto';
 import { parsearArchivoSire } from './sire-parser.util';
 
@@ -67,12 +67,15 @@ export class SireService {
     if (!empresa.sunat_api_client_id || !empresa.sunat_api_client_secret) {
       throw new BadRequestException('Falta configurar client_id/client_secret de la API SUNAT de esta empresa (Empresas → Credenciales SUNAT)');
     }
+    // .trim() también acá: las credenciales guardadas ANTES de que `guardarCredenciales`
+    // limpiara los espacios siguen en BD con el espacio/salto pegado del copy-paste, y
+    // eso solo se manifiesta como un 401 "cliente no autorizado" imposible de leer.
     return {
-      ruc: empresa.ruc as string,
-      usuarioSol: this.credencialesCrypto.descifrar(empresa.sunat_sol_usuario),
-      claveSol: this.credencialesCrypto.descifrar(empresa.sunat_sol_password),
-      clientId: this.credencialesCrypto.descifrar(empresa.sunat_api_client_id),
-      clientSecret: this.credencialesCrypto.descifrar(empresa.sunat_api_client_secret),
+      ruc: String(empresa.ruc).trim(),
+      usuarioSol: this.credencialesCrypto.descifrar(empresa.sunat_sol_usuario).trim(),
+      claveSol: this.credencialesCrypto.descifrar(empresa.sunat_sol_password).trim(),
+      clientId: this.credencialesCrypto.descifrar(empresa.sunat_api_client_id).trim(),
+      clientSecret: this.credencialesCrypto.descifrar(empresa.sunat_api_client_secret).trim(),
     };
   }
 
@@ -100,8 +103,21 @@ export class SireService {
 
     const data: any = await resp.json().catch(() => null);
     if (!resp.ok || !data?.access_token) {
+      const detalle = data?.error_description || data?.error || 'sin detalle';
+      // SUNAT distingue dos fallas con mensajes casi iguales y hay que atacarlas en
+      // sitios distintos del portal, así que se traduce acá en vez de repetir su texto:
+      //  - "cliente ..." → el par client_id/client_secret. Se generan en SOL →
+      //    Empresas → "Credenciales de API SUNAT", y hay que crearlas para el servicio
+      //    SIRE (las de facturación electrónica NO sirven, el scope es otro) y con el
+      //    RUC de ESTA empresa, no el del estudio.
+      //  - "usuario/clave" → el usuario SOL secundario debe existir y tener marcado el
+      //    permiso de SIRE en su perfil.
+      const esCliente = /cliente/i.test(detalle);
+      const ayuda = esCliente
+        ? 'SUNAT rechazó el client_id/client_secret. Verifique en SOL → Empresas → Credenciales de API SUNAT que estén generadas para el servicio SIRE, con el RUC de esta empresa, y que se hayan pegado completas y sin espacios.'
+        : 'SUNAT rechazó el usuario/clave SOL. Verifique que el usuario secundario exista, que la clave sea la vigente y que tenga habilitado el permiso de SIRE.';
       throw new HttpException(
-        `SUNAT rechazó la autenticación (${resp.status}): ${data?.error_description || data?.error || 'sin detalle'}`,
+        `SUNAT rechazó la autenticación (${resp.status}): ${detalle}. ${ayuda}`,
         resp.status >= 400 && resp.status < 500 ? 400 : 502,
       );
     }

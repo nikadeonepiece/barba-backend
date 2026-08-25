@@ -42,6 +42,16 @@
 -- ==============================================================================
 -- ESTRUCTURA (tablas + stored procedures)
 -- ==============================================================================
+-- Todas las tablas de este script son utf8mb4_unicode_ci. En MySQL 8 el collation
+-- por defecto de una base recien creada es utf8mb4_0900_ai_ci, y los parametros
+-- VARCHAR de un stored procedure heredan el collation de LA BASE en el momento de
+-- crearlo. Si la base quedo con el default de MySQL, cada comparacion
+-- `columna = p_parametro` dentro de un SP revienta con:
+--   Illegal mix of collations (utf8mb4_unicode_ci,IMPLICIT) and (utf8mb4_0900_ai_ci,IMPLICIT)
+-- Ese era el error del login (sis_usuario_obtener_por_correo). Este ALTER lo evita
+-- sin importar como se haya creado la base (panel del hosting, phpMyAdmin, etc.).
+-- Va sin nombre de base a proposito: aplica a la base activa de la conexion.
+ALTER DATABASE CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 /*!50503 SET NAMES utf8mb4 */;
 -- ==============================================================================
 -- 0. CORE DEL SISTEMA (SEGURIDAD Y AUDITORÍA) - INTOCABLE
@@ -2111,18 +2121,21 @@ ON DUPLICATE KEY UPDATE fecha_limite = VALUES(fecha_limite);
 --
 -- Todas admiten NULL: los tokens ya emitidos siguen siendo válidos.
 
-ALTER TABLE `auth_refresh_tokens`
-  ADD COLUMN IF NOT EXISTS `fecha_revocado` datetime DEFAULT NULL
-    COMMENT 'Cuándo se revocó — habilita la ventana de gracia para refrescos concurrentes',
-  ADD COLUMN IF NOT EXISTS `reemplazado_por` int DEFAULT NULL
-    COMMENT 'Token que sucedió a este al rotar. Permite seguir la cadena cuando dos pestañas refrescan a la vez, y detectar reuso de token robado',
-  ADD COLUMN IF NOT EXISTS `ip_origen` varchar(45) DEFAULT NULL
-    COMMENT 'IP desde la que se emitió (IPv6 entra en 45 chars)',
-  ADD COLUMN IF NOT EXISTS `user_agent` varchar(255) DEFAULT NULL
-    COMMENT 'Navegador/cliente que lo pidió — auditoría de sesión';
-
-ALTER TABLE `auth_refresh_tokens`
-  ADD INDEX IF NOT EXISTS `idx_refresh_reemplazado` (`reemplazado_por`);
+-- Ya incluidas en el CREATE TABLE de arriba; se dejan comentadas como referencia de
+-- la migracion. (MySQL no soporta ADD COLUMN IF NOT EXISTS: si se descomentan tal
+-- cual, el import falla con error de sintaxis.)
+-- ALTER TABLE `auth_refresh_tokens`
+--   ADD COLUMN IF NOT EXISTS `fecha_revocado` datetime DEFAULT NULL
+--     COMMENT 'Cuándo se revocó — habilita la ventana de gracia para refrescos concurrentes',
+--   ADD COLUMN IF NOT EXISTS `reemplazado_por` int DEFAULT NULL
+--     COMMENT 'Token que sucedió a este al rotar. Permite seguir la cadena cuando dos pestañas refrescan a la vez, y detectar reuso de token robado',
+--   ADD COLUMN IF NOT EXISTS `ip_origen` varchar(45) DEFAULT NULL
+--     COMMENT 'IP desde la que se emitió (IPv6 entra en 45 chars)',
+--   ADD COLUMN IF NOT EXISTS `user_agent` varchar(255) DEFAULT NULL
+--     COMMENT 'Navegador/cliente que lo pidió — auditoría de sesión';
+-- 
+-- ALTER TABLE `auth_refresh_tokens`
+--   ADD INDEX IF NOT EXISTS `idx_refresh_reemplazado` (`reemplazado_por`);
 
 -- ==============================================================================
 

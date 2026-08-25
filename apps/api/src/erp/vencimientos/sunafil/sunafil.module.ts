@@ -3,7 +3,7 @@ import { CommonModule } from '@app/common';
 import { SunafilController } from './sunafil.controller';
 import { SunafilService } from './sunafil.service';
 import { SunafilCasillaClient } from './sunafil-casilla.client';
-import { CredencialesCryptoService } from '../../comun/credenciales-crypto.service';
+import { CredencialesCryptoService } from '@app/security';
 
 @Module({
   imports: [CommonModule],
