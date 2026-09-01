@@ -25,6 +25,14 @@ const RUTAS_LARGAS: Array<{ patron: RegExp; ms: number }> = [
   { patron: /\/vencimientos\/sunafil\//i, ms: 180_000 },
   // Abre la ventana de "Mis declaraciones" con Playwright (headless: false).
   { patron: /\/abrir-mis-declaraciones/i, ms: 180_000 },
+  // T-Registro (planilla/trabajadores): login SOL + 5 niveles de menú + lectura del
+  // padrón. Se cortaba a los 15s con un 408 justo cuando ya estaba entrando a la
+  // pantalla — el síntoma engañaba, porque parecía que el scraper se colgaba.
+  // Se listan por el sufijo de la acción y no por el prefijo del módulo: la ruta
+  // real lleva el id de empresa en el medio
+  // (/planilla/trabajadores/empresas/57/consultar-tregistro).
+  { patron: /\/consultar-tregistro/i, ms: 180_000 },
+  { patron: /\/abrir-tregistro/i, ms: 180_000 },
   // Asistentes de IA: dependen de la latencia del modelo (antes /vencimientos/fase3/).
   { patron: /\/vencimientos\/asistentes-ia\//i, ms: 60_000 },
   { patron: /\/exportar\//i, ms: 60_000 },

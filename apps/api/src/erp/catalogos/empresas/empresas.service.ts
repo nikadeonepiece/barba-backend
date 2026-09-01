@@ -139,6 +139,30 @@ export class EmpresasService {
    * PC desde la que se usa la app (ver advertencia en sunat-login.client.ts).
    */
   async abrirMisDeclaraciones(id: number, userId: number) {
+    const { ruc, razonSocial, solUsuario, solPassword } = await this.credencialesSolParaLogin(id);
+    await this.auditoriaService.registrar('empresa', id, 'ACTUALIZAR', userId, null, { accion: 'abrir_mis_declaraciones_sunat' });
+    await this.sunatLoginClient.abrirSesionMisDeclaraciones(ruc, solUsuario, solPassword);
+    return { success: true, message: `Sesión abierta en SUNAT para ${razonSocial}` };
+  }
+
+  /**
+   * Igual que `abrirMisDeclaraciones`, pero entrando por "Mis trámites y consultas"
+   * (el menú COMPLETO de SOL). Son sesiones distintas y no se puede saltar de una
+   * a otra una vez adentro — por eso son dos acciones separadas y no una sola.
+   */
+  async abrirTramitesConsultas(id: number, userId: number) {
+    const { ruc, razonSocial, solUsuario, solPassword } = await this.credencialesSolParaLogin(id);
+    await this.auditoriaService.registrar('empresa', id, 'ACTUALIZAR', userId, null, { accion: 'abrir_tramites_consultas_sunat' });
+    await this.sunatLoginClient.abrirSesionTramitesConsultas(ruc, solUsuario, solPassword);
+    return { success: true, message: `Sesión abierta en SUNAT para ${razonSocial}` };
+  }
+
+  /**
+   * Trae y descifra la Clave SOL de la empresa para abrir sesión en SUNAT.
+   * Compartido por las dos puertas del portal; nunca se loguea ni se audita
+   * el valor descifrado.
+   */
+  private async credencialesSolParaLogin(id: number) {
     const [row] = await this.dataSource.query(
       `SELECT ruc, razon_social, sunat_sol_usuario, sunat_sol_password FROM empresa WHERE id_empresa = ?`,
       [id],
@@ -148,12 +172,11 @@ export class EmpresasService {
       throw new ConflictException('Esta empresa no tiene Usuario/Clave SOL guardados todavía');
     }
 
-    const solUsuario = this.credencialesCrypto.descifrar(row.sunat_sol_usuario);
-    const solPassword = this.credencialesCrypto.descifrar(row.sunat_sol_password);
-
-    await this.auditoriaService.registrar('empresa', id, 'ACTUALIZAR', userId, null, { accion: 'abrir_mis_declaraciones_sunat' });
-
-    await this.sunatLoginClient.abrirSesionMisDeclaraciones(row.ruc, solUsuario, solPassword);
-    return { success: true, message: `Sesión abierta en SUNAT para ${row.razon_social}` };
+    return {
+      ruc: row.ruc,
+      razonSocial: row.razon_social,
+      solUsuario: this.credencialesCrypto.descifrar(row.sunat_sol_usuario),
+      solPassword: this.credencialesCrypto.descifrar(row.sunat_sol_password),
+    };
   }
 }

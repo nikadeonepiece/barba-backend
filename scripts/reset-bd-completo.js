@@ -54,6 +54,17 @@ function correrBdSql(mysqlCli) {
   const sql = fs.readFileSync(bdSqlPath, 'utf8');
   const args = ['-h', process.env.DB_HOST || 'localhost', '-P', String(process.env.DB_PORT || 3306), '-u', process.env.DB_USER || 'root'];
   if (process.env.DB_PASSWORD) args.push(`-p${process.env.DB_PASSWORD}`);
+  // La base va EXPLÍCITA. Antes no se pasaba: el script dependía del `use
+  // estudiobarba;` de adentro de bd.sql, y por lo tanto del `drop database` que lo
+  // precede. Con esas 3 líneas comentadas (lo correcto: bd.sql no debe borrar
+  // bases) el script se quedaba sin base por defecto y fallaba.
+  //
+  // Además ese acoplamiento era la trampa: correr este script rehacía la base desde
+  // cero SIEMPRE, aunque bd.sql estuviera dañado. Pasó el 27/08/2026 a las 18:13 y
+  // se llevó las 171 empresas y las declaraciones cargadas.
+  const base = process.env.DB_DATABASE || process.env.DB_NAME;
+  if (!base) throw new Error("Falta DB_DATABASE en el .env — sin eso no se sabe contra qué base correr.");
+  args.push(base);
   const r = spawnSync(mysqlCli, args, { input: sql, stdio: ['pipe', 'inherit', 'inherit'] });
   if (r.status !== 0) throw new Error('bd.sql falló — revisa el mensaje de MySQL arriba.');
   console.log('[1/2] bd.sql OK.');

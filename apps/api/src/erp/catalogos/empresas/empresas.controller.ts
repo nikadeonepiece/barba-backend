@@ -55,4 +55,10 @@ export class EmpresasController {
   abrirMisDeclaraciones(@Param('id', ParseIntPipe) id: number, @Req() req: any) {
     return this.empresasService.abrirMisDeclaraciones(id, req.user.userId);
   }
+
+  @RequirePermissions('VENCIMIENTOS_TRIBUTARIO', 'ver_credenciales_sunat')
+  @Post(':id/abrir-tramites-consultas')
+  abrirTramitesConsultas(@Param('id', ParseIntPipe) id: number, @Req() req: any) {
+    return this.empresasService.abrirTramitesConsultas(id, req.user.userId);
+  }
 }
