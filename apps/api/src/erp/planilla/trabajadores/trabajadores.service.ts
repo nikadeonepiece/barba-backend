@@ -592,15 +592,17 @@ export class TrabajadoresService {
   /**
    * Consulta el padrón del T-Registro y lo devuelve para que un humano lo confirme.
    *
-   * NO crea trabajadores. La navegación interna del T-Registro todavía no está
-   * verificada (ver el cliente de scraping y la guía TREG): si un selector agarra la
-   * columna equivocada, es preferible que el usuario lo vea en la vista previa a
-   * descubrirlo con 40 trabajadores mal cargados.
+   * NO crea trabajadores. El recorrido está verificado de punta a punta (11 de 11
+   * sueldos el 01/09/2026, ver el cliente de scraping y la guía TREG), pero la vista
+   * previa NO sobra: si SUNAT mueve un selector, es preferible que el usuario lo vea
+   * ahí a descubrirlo con 40 trabajadores mal cargados. Y hay algo que ningún
+   * selector puede arreglar — el T-Registro guarda la remuneración INICIAL, la del
+   * ingreso; para el sueldo vigente manda el PLAME o el Excel del estudio.
    *
    * `supervisado = true` abre el navegador visible, que es como hay que correrlo
    * mientras los selectores sigan sin confirmar.
    */
-  async consultarTregistro(idEmpresa: number, supervisado: boolean, userId: number) {
+  async consultarTregistro(idEmpresa: number, supervisado: boolean, userId: number, explorarReportes = false) {
     const [row] = await this.dataSource.query(
       `SELECT ruc, razon_social, sunat_sol_usuario, sunat_sol_password
        FROM empresa WHERE id_empresa = ? AND estado_registro = 'ACTIVO'`,
@@ -619,7 +621,7 @@ export class TrabajadoresService {
     });
 
     const resultado = await this.scrapingTregistro.extraerPadron(
-      row.ruc, solUsuario, solPassword, !supervisado,
+      row.ruc, solUsuario, solPassword, !supervisado, explorarReportes,
     );
 
     // Se traduce lo que devolvió el portal usando el catálogo de errores conocidos.

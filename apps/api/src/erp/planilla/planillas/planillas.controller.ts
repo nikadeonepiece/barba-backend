@@ -1,4 +1,5 @@
-import { Controller, Get, Post, Patch, Delete, Body, Param, Query, ParseIntPipe, UseGuards, Req } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Delete, Body, Param, Query, ParseIntPipe, UseGuards, Req, Res } from '@nestjs/common';
+import type { Response } from 'express';
 import { JwtAuthGuard, PermissionsGuard, RequirePermissions } from '@app/auth';
 import { PlanillasService } from './planillas.service';
 import { CreatePlanillaDto, CreateEntradaDatoDto, GuardarTareoDto } from './dto/planilla.dto';
@@ -69,6 +70,23 @@ export class PlanillasController {
   @Get(':id/detalle')
   findDetalle(@Param('id', ParseIntPipe) id: number) {
     return this.service.findDetalle(id);
+  }
+
+  // El PDF va declarado ANTES que la ruta de la boleta en JSON. No chocan (tiene un
+  // segmento más), pero se mantiene el orden más-específico-primero que es la
+  // convención del proyecto: el día que alguien agregue `:id/boleta/:algo` genérico,
+  // este orden ya lo protege.
+  //
+  // `@Res()` SIN `passthrough`: deshabilita el TransformInterceptor, que si no
+  // envolvería el binario del PDF dentro del JSON `{ success, data }`.
+  @RequirePermissions('PLANILLA', 'generar_boleta')
+  @Get(':id/boleta/:idTrabajador/pdf')
+  async exportarBoletaPdf(
+    @Param('id', ParseIntPipe) id: number,
+    @Param('idTrabajador', ParseIntPipe) idTrabajador: number,
+    @Res() res: Response,
+  ) {
+    await this.service.exportarBoletaPdf(id, idTrabajador, res);
   }
 
   @RequirePermissions('PLANILLA', 'generar_boleta')

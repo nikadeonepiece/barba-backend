@@ -15,6 +15,17 @@ export class UsuariosController {
     return this.usuariosService.getRoles();
   }
 
+  // Pide `ver_usuario` y no un permiso de catálogos: quien lo consume es el
+  // formulario de esta misma pantalla, para elegir la empresa de un usuario del
+  // portal cliente. Exigirle permisos de `catalogos/empresas` daría 403 a quien
+  // legítimamente administra usuarios (mismo criterio que el catálogo de la Tabla
+  // 22 en planilla/configuracion, que pide `ver_trabajador`).
+  @RequirePermissions('USUARIOS', 'ver_usuario')
+  @Get('listas/empresas')
+  getEmpresas() {
+    return this.usuariosService.getEmpresas();
+  }
+
   // Sin @RequirePermissions: cualquier usuario logueado cambia su propia contraseña
   @Put('me/password')
   cambiarPassword(@Body() dto: CambiarPasswordDto, @Req() req: any) {

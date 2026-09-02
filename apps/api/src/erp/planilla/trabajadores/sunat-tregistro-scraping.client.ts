@@ -37,13 +37,20 @@ export interface ResultadoScrapeTregistro {
  * Extrae el padrón de trabajadores del T-Registro de SUNAT.
  *
  * ═══════════════════════════════════════════════════════════════════════════════
- *  ESTADO AL 27/08/2026: LOGIN Y RUTA DEL MENÚ VERIFICADOS EN VIVO
- *  FICHA INDIVIDUAL (sueldo y datos personales): EN VERIFICACIÓN
+ *  ESTADO AL 01/09/2026: RECORRIDO COMPLETO VERIFICADO — 11 de 11 sueldos leídos
+ *  en una corrida real contra el RUC 20530093019.
  * ═══════════════════════════════════════════════════════════════════════════════
- * Verificado contra sunat.gob.pe: el login, la cadena de redirects y los 5 niveles
- * de menú hasta la tabla del padrón. Lo que sigue sin confirmar son las etiquetas
- * DENTRO de la ficha de cada trabajador (pestaña "Trabajador"), por eso la primera
- * corrida vuelca esa pantalla al diagnóstico en vez de adivinar.
+ * Verificado contra sunat.gob.pe: el login, la cadena de redirects, los 5 niveles de
+ * menú hasta la tabla del padrón y —con capturas de la ficha real— dónde vive el
+ * sueldo: pestaña "Trabajador" → Datos laborales → "Monto de remuneración básica
+ * inicial", que es un <input> con el importe (p. ej. 2000: SIN decimales).
+ *
+ * ⚠️ LO MÁS GRAVE QUE ENSEÑÓ ESA CAPTURA: la fila del padrón termina en DOS columnas
+ * de acción — "Modificar" (el ícono que abre la ficha) y "Eliminar" (una X roja que
+ * da de baja al trabajador en el T-Registro real del cliente). La versión anterior,
+ * cuando no ubicaba el ícono por su etiqueta, clickeaba "cualquier cosa clickeable de
+ * la fila, DE ATRÁS PARA ADELANTE": o sea que la primera que probaba era esa X. Ese
+ * recorrido ya no existe. Ver `abrirFicha`.
  *
  * LO QUE COSTÓ LLEGAR ACÁ, para no repetirlo:
  *   - sol.html tiene varias puertas y cada una deja la sesión en una APLICACIÓN
@@ -54,7 +61,8 @@ export interface ResultadoScrapeTregistro {
  *     menú. Hay que esperar a LLEGAR al destino, no a "salir" de una de ellas.
  *     Ver `esperarMenu`.
  *   - Las acciones de cada fila son íconos SIN texto: buscarlas por nombre
- *     accesible no sirve. Ver `abrirFicha`.
+ *     accesible no sirve. Lo que sí las distingue es el javascript: del href —
+ *     irModificar() abre la ficha, y es lo único que se clickea. Ver `abrirFicha`.
  *   - Nacionalidad, teléfono y correo son campos de formulario: `innerText` no ve
  *     su valor y salían vacíos sin error. Ver `textoDePantalla`.
  *
@@ -128,6 +136,11 @@ export class SunatTregistroScrapingClient {
     MENU_REGISTRO_TRABAJADORES: 'Registro de Trabaj.',
     MENU_REGISTRO_INDIVIDUAL: 'Registro individual',
 
+    // Hermana de "Registro individual" en el mismo submenú. No se usa para leer el
+    // padrón: es para el MODO EXPLORACIÓN, que va a ver si por acá se puede sacar el
+    // sueldo de todos de una vez en lugar de abrir once fichas.
+    MENU_CONSULTAS_REPORTES: 'Consultas y reportes',
+
     // La pantalla final se llama "Registro de Trabajadores, Pensionistas y Otros" y
     // trae la tabla ya listada, sin necesidad de buscar: columnas Categoría (TRA para
     // trabajador), Documento de Identidad, Apellidos y Nombres, Fecha.
@@ -145,6 +158,13 @@ export class SunatTregistroScrapingClient {
     // Marcador de que un marco muestra EL PADRÓN y no otra pantalla: cada fila trae
     // el enlace que abre la ficha. Verificado en el HTML de la primera fila:
     //   <a href="javascript:irModificar('24629232','4194123','1','01','40966442',…)">
+    //
+    // Es TAMBIÉN la única forma segura de ABRIR la ficha. Columnas de la tabla,
+    // verificadas en pantalla el 01/09/2026:
+    //   Categoría | Documento de Identidad | Apellidos y Nombres | Fec. Nac. |
+    //   Sexo | Estado | Modificar | Eliminar
+    // Las dos últimas son íconos sin texto y la ÚLTIMA borra. Por eso la ficha no se
+    // abre nunca "por posición" en la fila: se clickea este href y nada más.
     ENLACE_FICHA: 'a[href*="irModificar"]',
 
     // El documento viene como "L.E / DNI - 18191432", no como número pelado: hay que
@@ -164,15 +184,33 @@ export class SunatTregistroScrapingClient {
 
     // Nunca clickear nada que coincida con esto: modificaría el T-Registro del
     // cliente o cerraría la sesión. Solo leemos, no tocamos.
-    NUNCA_CLICKEAR: /grabar|guardar|eliminar|dar de baja|salir|cerrar sesi|desactivar|anular/i,
+    //
+    // Se compara contra el texto Y contra el href/onclick del elemento, porque los
+    // íconos de la fila no tienen texto ninguno: el de borrar es una X roja y lo
+    // único que lo delata es su javascript:. Mirando solo el texto, este filtro
+    // dejaba pasar justo el clic que da de baja al trabajador.
+    NUNCA_CLICKEAR: /grabar|guardar|eliminar|dar de baja|darDeBaja|salir|cerrar sesi|desactivar|anular/i,
 
-    ACCIONES_FICHA: ['Editar', 'Modificar', 'Detalle', 'Ver', 'Consultar'],
+    // La ficha llama al sueldo "Monto de remuneración básica inicial" — verificado en
+    // pantalla el 01/09/2026. Va PRIMERO por ser la etiqueta exacta; las demás quedan
+    // como red por si SUNAT la abrevia en otra empresa.
     ETIQUETAS_REMUNERACION: [
+      'Monto de remuneración básica inicial', 'Monto de remuneracion basica inicial',
+      'remuneración básica inicial', 'remuneracion basica inicial',
       'Remuneración básica', 'Remuneracion basica', 'Remuneración', 'Remuneracion',
       'Sueldo básico', 'Sueldo basico', 'Sueldo', 'Ingreso mensual',
     ],
-    // Importes peruanos: 1,500.00 / 1500.00 / 930.00
-    PATRON_MONTO: /(\d{1,3}(?:[,]\d{3})*(?:\.\d{2})|\d+\.\d{2})/,
+
+    // Régimen pensionario y CUSPP NO están en "Datos laborales": viven en esta
+    // sección, que la ficha muestra plegada. Se despliega DESPUÉS de leer el sueldo,
+    // para que un fallo acá no cueste el dato que fuimos a buscar.
+    SECCION_SEGURIDAD_SOCIAL: 'Datos de Seguridad Social',
+
+    // Importes peruanos, CON O SIN decimales: 1,500.00 / 1500.00 / 930.50 / 2000.
+    // Lo de "sin decimales" no es un extra: la ficha de MORI SAAVEDRA trae 2000
+    // pelado y el patrón anterior exigía dos decimales — encontraba la etiqueta, no
+    // encontraba número y devolvía null. El sueldo llegaba vacío sin un solo error.
+    PATRON_MONTO: /(\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?|\d+(?:\.\d{1,2})?)/,
   };
 
   /**
@@ -184,6 +222,7 @@ export class SunatTregistroScrapingClient {
     solUsuario: string,
     solPassword: string,
     headless = true,
+    explorarReportes = false,
   ): Promise<ResultadoScrapeTregistro> {
     const s = SunatTregistroScrapingClient.SELECTORES;
     const diagnostico: string[] = [];
@@ -245,6 +284,18 @@ export class SunatTregistroScrapingClient {
 
       // El sueldo no está en el listado: hay que abrir la ficha de cada uno.
       if (trabajadores.length) await this.leerSueldos(sesion, s, trabajadores, diagnostico);
+
+      // MODO EXPLORACIÓN: va a mirar qué ofrece "Consultas y reportes" — ¿se puede
+      // bajar el padrón CON la remuneración en un solo archivo, en vez de abrir una
+      // ficha por trabajador? Va DESPUÉS de la lectura y no en lugar de ella: así un
+      // mismo login contesta las dos preguntas. Con el WAF contando sesiones, gastar
+      // una entera en cada una es un lujo.
+      //
+      // `sesion`, NO `page`: el login abre una VENTANA NUEVA y ahí vive el menú de
+      // SOL. `page` se queda en sol.html, el portal público — escrito así, buscó
+      // "Consultas y reportes" entre "Agricultura, ganadería y pesca" y
+      // "Transparencia", y gastó una sesión para decir que no lo encontraba.
+      if (explorarReportes) await this.mirarConsultasYReportes(sesion, s, diagnostico);
 
       return {
         exito: trabajadores.length > 0,
@@ -638,40 +689,132 @@ export class SunatTregistroScrapingClient {
     return false;
   }
 
-  /** Un clic con espera; devuelve false en vez de reventar si el nodo no sirve. */
+  /**
+   * Un clic con espera; devuelve false en vez de reventar si el nodo no sirve.
+   *
+   * @param esperaMs pausa fija DESPUÉS del clic. Los 2 s del menú están medidos
+   *   contra SUNAT y no se tocan, pero dentro de la ficha el resultado se verifica
+   *   igual (que aparezca "Datos laborales", que vuelva el padrón), así que esperar
+   *   lo mismo era dormir de más: cuatro clics por ficha × once fichas son casi 90
+   *   segundos regalados, y con eso la petición se pasaba del techo de tiempo.
+   */
   private async intentarClic(
-    page: Page, loc: Locator, descripcion: string, diagnostico: string[],
+    page: Page, loc: Locator, descripcion: string, diagnostico: string[], esperaMs = 2000,
   ): Promise<boolean> {
     try {
       if (!(await loc.count())) return false;
-      if (!(await loc.isVisible())) return false;
+      if (!(await loc.isVisible())) {
+        diagnostico.push(`"${descripcion}" existe pero no está visible.`);
+        return false;
+      }
 
       // Este cliente SOLO LEE. Un clic en "Grabar" modificaría el T-Registro real
       // de un cliente del estudio, y uno en "Salir" cerraría la sesión (y cada
       // login nuevo acerca el bloqueo del WAF). La ficha tiene ambos botones.
       const texto = ((await loc.innerText().catch(() => '')) || '') +
         ' ' + ((await loc.getAttribute('title').catch(() => '')) || '') +
-        ' ' + ((await loc.getAttribute('value').catch(() => '')) || '');
+        ' ' + ((await loc.getAttribute('value').catch(() => '')) || '') +
+        // El ícono de borrar de la fila no tiene texto NI title: lo único que lo
+        // identifica es su javascript:. Mirando solo el texto, este filtro lo daba
+        // por inofensivo — y es el que da de baja al trabajador.
+        ' ' + ((await loc.getAttribute('href').catch(() => '')) || '') +
+        ' ' + ((await loc.getAttribute('onclick').catch(() => '')) || '');
       if (SunatTregistroScrapingClient.SELECTORES.NUNCA_CLICKEAR.test(texto)) {
         diagnostico.push(`Se evitó clickear "${texto.trim().slice(0, 40)}" (${descripcion}): es una acción que modifica o cierra sesión.`);
         return false;
       }
       await loc.click({ timeout: 5_000 });
       await page.waitForLoadState('domcontentloaded', { timeout: 15_000 }).catch(() => {});
-      await page.waitForTimeout(2000);
+      await page.waitForTimeout(esperaMs);
       diagnostico.push(`OK — clic en "${descripcion}"`);
       return true;
-    } catch {
+    } catch (e: any) {
+      // EL ELEMENTO ESTABA Y AUN ASÍ NO SE PUDO CLICKEAR: eso hay que decirlo. El
+      // 01/09/2026 el botón "Retornar" de la ficha no se pulsó y el `catch` mudo dejó
+      // el diagnóstico sin una sola línea sobre el asunto — se veía igual que si el
+      // botón no existiera, que es justo la confusión que hace perder una sesión.
+      // Los candidatos que directamente no existen siguen sin ensuciar nada: esos
+      // salen antes por `count()`.
+      diagnostico.push(`No se pudo clickear "${descripcion}": ${String(e?.message ?? e).split(String.fromCharCode(10))[0].slice(0, 140)}`);
       return false;
     }
+  }
+
+  /**
+   * MODO EXPLORACIÓN. Abre "Consultas y reportes" y vuelca lo que hay: el texto de
+   * cada marco, las opciones clickeables y los controles del formulario.
+   *
+   * Por qué existe: leer el sueldo abriendo la ficha de cada trabajador funciona
+   * (11/11 el 01/09/2026) pero es caro y frágil — una navegación por persona, con
+   * sus tiempos de carga, dentro de la pantalla de EDICIÓN del registro real del
+   * cliente. Si esta otra opción del menú permite bajar el padrón con la
+   * remuneración incluida, todo eso sobra.
+   *
+   * No hace clic en nada que no sea la opción del menú: solo mira.
+   */
+  private async mirarConsultasYReportes(
+    page: Page, s: typeof SunatTregistroScrapingClient.SELECTORES, diagnostico: string[],
+  ): Promise<void> {
+    // HAY QUE REABRIR LA RAMA DEL MENÚ. Después de recorrer las once fichas, el árbol
+    // de SOL vuelve a plegarse: la opción sigue en el DOM pero oculta, y el clic no
+    // la agarra. El diagnóstico del 01/09/2026 lo dijo con todas las letras —
+    // "Consultas y reportes [texto exacto]" existe pero no está visible— gracias a
+    // que `intentarClic` ahora informa ese caso en vez de devolver false en silencio.
+    // Se reabren los dos niveles de arriba, sin exigir que funcionen: si el árbol ya
+    // estaba abierto, el clic no encuentra nada que hacer y no pasa nada.
+    await this.clicEnMenu(page, s.MENU_TREGISTRO, diagnostico);
+    await this.clicEnMenu(page, s.MENU_REGISTRO_TRABAJADORES, diagnostico);
+
+    if (!(await this.clicEnMenu(page, s.MENU_CONSULTAS_REPORTES, diagnostico))) {
+      diagnostico.push(`No se encontró "${s.MENU_CONSULTAS_REPORTES}" en el menú.`);
+      await this.volcarOpcionesVisibles(page, diagnostico);
+      return;
+    }
+
+    await page.waitForTimeout(4000);
+
+    for (const marco of this.marcosOrdenados(page, s)) {
+      const texto = await this.textoDeMarco(marco);
+      if (texto.trim().length > 40) {
+        diagnostico.push(`PANTALLA en ${this.donde(page, marco)}: ${texto.slice(0, 2500)}`);
+      }
+    }
+
+    // Los controles importan tanto como el texto: un <select> de periodo o un botón
+    // de "Generar/Descargar" es la diferencia entre un reporte servible y una
+    // consulta en pantalla.
+    for (const marco of this.marcosOrdenados(page, s)) {
+      const controles = await marco.evaluate(() => Array.from(
+        document.querySelectorAll('select, input, button, a[href]'),
+      ).slice(0, 60).map((e) => {
+        const el = e as HTMLElement;
+        const t = el.tagName.toLowerCase();
+        const attr = (n: string) => el.getAttribute(n) || '';
+        if (t === 'select') {
+          const s2 = el as unknown as HTMLSelectElement;
+          const ops = Array.from(s2.options).slice(0, 6).map((o) => o.text).join('/');
+          return `<select ${attr('name') || attr('id')}> [${ops}]`;
+        }
+        return `<${t} ${attr('type')} ${attr('name') || attr('id')}> "${(el.innerText || attr('value') || '').replace(/\s+/g, ' ').trim().slice(0, 45)}" ${attr('href').slice(0, 60)}`;
+      })).catch(() => [] as string[]);
+      if (controles.length) {
+        diagnostico.push(`CONTROLES en ${this.donde(page, marco)}: ${controles.join(' · ').slice(0, 2200)}`);
+      }
+    }
+
+    await this.volcarOpcionesVisibles(page, diagnostico);
   }
 
   /** Ubica la pantalla del padrón, esté en la página principal o en un iframe. */
   private async ubicarPantallaPadron(
     page: Page, s: typeof SunatTregistroScrapingClient.SELECTORES, diagnostico: string[],
   ): Promise<Frame | null> {
-    // Un margen extra: la pantalla del T-Registro tarda en montar su tabla.
-    await page.waitForTimeout(2500);
+    // Antes acá había una espera fija de 2,5 s "por si la tabla tarda en montar".
+    // Se pagaba entera en CADA ficha, incluso cuando el padrón ya estaba en pantalla
+    // —que es lo normal, porque volverAlPadron ya lo verificó antes de devolver—. Con
+    // once trabajadores son casi 30 segundos dormidos al pedo. Ahora se sondea: sale
+    // apenas aparece, y solo espera de verdad cuando hace falta.
+    await this.esperarPadron(page, s, 8_000);
 
     const marcos = this.marcosOrdenados(page, s);
 
@@ -839,30 +982,42 @@ export class SunatTregistroScrapingClient {
   ): Promise<void> {
     let leidos = 0;
 
+    // La URL del iframe del padrón, con su token. Se guarda la primera vez que se lo
+    // encuentra porque es la forma más confiable de volver: no depende de acertarle a
+    // ningún botón. Ver volverAlPadron.
+    let urlPadron: string | null = null;
+
     for (let i = 0; i < trabajadores.length; i++) {
       const t = trabajadores[i];
+
+      // UNA LÍNEA POR FICHA, SIEMPRE. Antes solo la primera dejaba rastro y las otras
+      // pasaban en silencio: la corrida del 01/09/2026 trajo UN sueldo de once y el
+      // diagnóstico no permitía saber si las otras diez fallaron al abrir la ficha, al
+      // abrir la pestaña o al volver al padrón. Once líneas cortas no cuestan nada y
+      // ahorran otra sesión a ciegas.
+      const traza: string[] = [];
+      const anotar = () =>
+        diagnostico.push(`Ficha ${i + 1}/${trabajadores.length} (${t.numero_documento}): ${traza.join(' · ')}`);
+
       try {
         // La tabla se vuelve a montar tras cada ida y vuelta: hay que relocalizarla.
-        // El diagnóstico de la primera vuelta SÍ se guarda: era lo único que decía
-        // en qué marco se creyó encontrar el padrón, y se estaba tirando a la basura.
         const marco = await this.ubicarPantallaPadron(page, s, i === 0 ? diagnostico : []);
         if (!marco) {
-          diagnostico.push(
-            i === 0
-              ? 'Sueldos — no se ubicó la tabla del padrón antes de abrir la primera ficha. Se corta acá.'
-              : `Sueldos — no se pudo volver al padrón después de la ficha ${i}. Se corta acá.`,
-          );
+          traza.push(i === 0
+            ? 'NO se ubicó la tabla del padrón antes de la primera ficha — se corta acá'
+            : 'NO se pudo volver al padrón — se corta acá');
+          anotar();
           break;
         }
+        if (!urlPadron) urlPadron = marco.url();
 
         if (!(await this.abrirFicha(marco, page, t, s, diagnostico, i === 0))) {
-          // Se dice DÓNDE se buscó y QUÉ había en pantalla: cuando la vuelta al
-          // padrón falla, el marco muestra otra cosa y el mensaje pelado señalaba a
-          // la persona siguiente, que no tenía nada que ver con el fallo real.
-          diagnostico.push(
-            `Sueldos — no se encontró la fila de ${t.numero_documento} en ${this.donde(page, marco)}. ` +
-            `Lo que hay en pantalla: ${(await this.textoDeMarco(marco)).slice(0, 400)}`,
-          );
+          // Se dice DÓNDE se buscó y QUÉ había en pantalla: cuando la vuelta al padrón
+          // falla, el marco muestra otra cosa y el mensaje pelado señalaba a la persona
+          // siguiente, que no tenía nada que ver con el fallo real.
+          traza.push(`NO se encontró su fila en ${this.donde(page, marco)} — se corta acá`);
+          traza.push(`en pantalla: ${(await this.textoDeMarco(marco)).slice(0, 300)}`);
+          anotar();
           if (i === 0) await this.volcarOpcionesVisibles(page, diagnostico);
           break;
         }
@@ -881,36 +1036,175 @@ export class SunatTregistroScrapingClient {
         // Lo personal está en la primera pantalla de la ficha.
         this.extraerIdentificacion(texto, t);
 
-        // Lo laboral (sueldo, ingreso, pensión) vive en la pestaña "Trabajador":
-        // la ficha abre en "Resumen de Prestadores", que no trae ningún monto.
-        if (await this.abrirPestanaTrabajador(page, s, i === 0 ? diagnostico : [])) {
+        // Lo laboral (sueldo, ingreso) vive en la pestaña "Trabajador": la ficha abre
+        // en "Resumen de Prestadores", que no trae ningún monto.
+        if (await this.abrirPestanaTrabajador(page, s, marcoFicha, t.numero_documento, traza, i === 0 ? diagnostico : [])) {
           const textoLaboral = await this.textoDeMarco(this.marcoTregistro(page) ?? marcoFicha);
           if (i === 0) {
             diagnostico.push(`Pestaña Trabajador del primero (para ajustar selectores): ${textoLaboral.slice(0, 2000)}`);
           }
-          const monto = this.buscarRemuneracion(textoLaboral, s);
-          if (monto) { t.sueldo_basico = monto; leidos++; }
 
-          const ingreso = this.valorTrasEtiqueta(textoLaboral, 'Fecha de Inicio', ['Fecha de Fin', 'Régimen', 'Regimen', 'Tipo'])
-            ?? this.valorTrasEtiqueta(textoLaboral, 'Fecha de Ingreso', ['Fecha de Fin', 'Régimen', 'Regimen', 'Tipo']);
-          if (ingreso && /^\d{1,2}\/\d{1,2}\/\d{4}/.test(ingreso)) t.fecha_ingreso = ingreso.slice(0, 10);
+          // DEL CAMPO, no del texto: ver valorDeCampo. Un '' quiere decir que la
+          // etiqueta está y el campo está vacío — eso es un sueldo que SUNAT no
+          // tiene, y se deja en null en vez de buscarle un número cerca.
+          const marcoAhora = this.marcoTregistro(page) ?? marcoFicha;
+          const campo = await this.valorDeCampo(marcoAhora, s.ETIQUETAS_REMUNERACION);
+          const delCampo = campo ? (campo.replace(/[^\d.,]/g, '').replace(/,/g, '') || null) : null;
 
-          // \b para que "AFP" no coincida dentro de otra palabra y termine marcando
-          // como afiliado al SPP a alguien que en realidad está en la ONP.
-          if (/\bAFP\b|Sistema Privado/i.test(textoLaboral)) t.regimen_pensionario = 'AFP';
-          else if (/\bONP\b|Sistema Nacional/i.test(textoLaboral)) t.regimen_pensionario = 'ONP';
-        } else if (i === 0) {
-          diagnostico.push('No se encontró la pestaña "Trabajador" de la ficha — el sueldo no está en el resumen.');
+          // Si el campo no dio un número usable se cae a la red de texto, que ahora
+          // corta en el rótulo siguiente y ya no puede traerse el "1" de "Jornada
+          // laboral". Antes esto no existía: un campo ilegible dejaba el sueldo en
+          // null aunque el dato estuviera a la vista en la misma pantalla.
+          const monto = (delCampo && Number(delCampo) > 0)
+            ? delCampo
+            : this.buscarRemuneracion(textoLaboral, s);
+          const fuente = (delCampo && Number(delCampo) > 0) ? 'campo' : 'texto';
+
+          if (monto && Number(monto) > 0) {
+            t.sueldo_basico = monto;
+            leidos++;
+            traza.push(`sueldo ${monto} (${fuente})`);
+          } else {
+            traza.push(`SIN monto (campo leído: ${JSON.stringify(campo)})`);
+          }
+
+          // La fecha de ingreso es la "Fecha de Inicio" del Periodo laboral, pero se
+          // busca desde "Periodo laboral" y NO desde "Fecha de Inicio": en esta
+          // pantalla los rótulos de las tres columnas van todos juntos ANTES de los
+          // campos, así que justo detrás de "Fecha de Inicio" no hay una fecha sino el
+          // rótulo siguiente ("(dd/mm/aaaa) Fecha de Fin ...").
+          // La fecha de ingreso, del mismo modo y por la misma razón. El texto
+          // corrido queda de red por si SUNAT cambia el armado de la fila.
+          const campoIngreso = await this.valorDeCampo(marcoAhora, ['Periodo laboral']);
+          const ingreso = (campoIngreso && /^\d{2}\/\d{2}\/\d{4}$/.test(campoIngreso.trim()))
+            ? campoIngreso.trim()
+            : (textoLaboral.match(/Periodo laboral:?\s*(\d{2}\/\d{2}\/\d{4})/i)?.[1] ?? null);
+
+          if (ingreso) {
+            t.fecha_ingreso = ingreso;
+            traza.push(`ingreso ${ingreso}`);
+          } else {
+            traza.push('sin fecha de ingreso');
+          }
+
+          // El régimen pensionario no está en esta pestaña: ver leerSeguridadSocial.
+          await this.leerSeguridadSocial(page, s, t, marcoFicha, diagnostico, i === 0);
+          if (t.regimen_pensionario) traza.push(t.regimen_pensionario);
+        } else {
+          traza.push('NO abrió la pestaña "Trabajador" — el sueldo no está en el resumen');
         }
 
-        await this.volverAlPadron(page, s);
+        const vuelta = await this.volverAlPadron(page, s, urlPadron, i === 0 ? diagnostico : []);
+        traza.push(vuelta);
+
+        // Si no se pudo volver, la próxima vuelta del bucle corta igual: mejor dejar
+        // dicho ACÁ cómo está hecho el botón que no se pudo pulsar, que descubrirlo
+        // en otra sesión. La lupa mira el marco de la ficha, no la página entera.
+        if (i === 0 && vuelta.startsWith('NO VOLVIÓ')) {
+          await this.lupaSobre(this.marcoTregistro(page) ?? page, 'Retornar', diagnostico);
+        }
+        anotar();
       } catch (e: any) {
-        diagnostico.push(`Sueldos — falló la ficha de ${t.numero_documento}: ${e?.message ?? e}`);
-        await this.volverAlPadron(page, s).catch(() => {});
+        traza.push(`EXCEPCIÓN: ${e?.message ?? e}`);
+        anotar();
+        await this.volverAlPadron(page, s, urlPadron).catch(() => {});
       }
     }
 
     diagnostico.push(`Sueldos leídos: ${leidos} de ${trabajadores.length}`);
+  }
+
+  /**
+   * Lee el régimen pensionario de "Datos de Seguridad Social".
+   *
+   * POR QUÉ EXISTE: en la pestaña "Trabajador" no aparece ni "AFP" ni "ONP" — eso está
+   * en otra sección, que la ficha muestra plegada (verificado en pantalla el
+   * 01/09/2026, junto con "Datos de la Situación Educativa" y "Datos Tributarios"). El
+   * código anterior lo buscaba en el texto de la pestaña laboral, o sea donde no está:
+   * no iba a encontrarlo nunca y nadie se enteraba, porque no encontrar algo no da
+   * error.
+   *
+   * PRIMERO SIN TOCAR NADA. `textoDeMarco` no filtra por visibilidad, así que si la
+   * sección viene plegada pero montada en el DOM, su contenido YA está en el texto y no
+   * hace falta ningún clic. Solo si ahí no aparece se intenta desplegarla. Esto importa
+   * más de lo que parece: en la corrida del 01/09/2026 el único trabajador al que se le
+   * desplegó la sección fue también el último que se pudo leer — después de esa ficha
+   * no se volvió al padrón y las nueve restantes quedaron sin nada. Un clic de menos
+   * dentro de la ficha de un cliente es un riesgo de menos, y para cuando esto corre el
+   * sueldo —que es lo que fuimos a buscar— ya está leído.
+   *
+   * Nunca aborta: sin régimen el trabajador se importa igual y el usuario lo completa.
+   */
+  private async leerSeguridadSocial(
+    page: Page,
+    s: typeof SunatTregistroScrapingClient.SELECTORES,
+    t: TrabajadorScrapeado,
+    marcoFicha: Frame,
+    diagnostico: string[],
+    volcar: boolean,
+  ): Promise<void> {
+    try {
+      let texto = await this.textoDeMarco(this.marcoTregistro(page) ?? marcoFicha);
+
+      if (!this.marcarRegimen(texto, t)) {
+        await this.intentarClic(
+          page,
+          (this.marcoTregistro(page) ?? marcoFicha).getByText(s.SECCION_SEGURIDAD_SOCIAL).first(),
+          `sección ${s.SECCION_SEGURIDAD_SOCIAL}`,
+          volcar ? diagnostico : [],
+          700,
+        );
+        texto = await this.textoDeMarco(this.marcoTregistro(page) ?? marcoFicha);
+        this.marcarRegimen(texto, t);
+      }
+
+      // El volcado se recorta DESDE la sección: la ficha entera no entra en el
+      // diagnóstico, y el principio ya se volcó al leer la identificación.
+      if (volcar) {
+        const desde = texto.toLowerCase().indexOf(s.SECCION_SEGURIDAD_SOCIAL.toLowerCase());
+        diagnostico.push(
+          `Datos de Seguridad Social del primero: ${desde >= 0 ? texto.slice(desde, desde + 1200) : '(no se ubicó la sección) ' + texto.slice(0, 600)}`,
+        );
+      }
+
+      // El CUSPP se valida antes de guardarlo: si la etiqueta agarró cualquier otra
+      // cosa, mejor dejarlo vacío que meter basura en la ficha del trabajador.
+      const cuspp = this.valorTrasEtiqueta(texto, 'CUSPP', ['Fecha', 'Régimen', 'Regimen', 'Tipo', 'Comisión', 'Comision', 'EsSalud']);
+      if (cuspp && /^[A-Za-z0-9]{10,15}$/.test(cuspp)) t.cuspp = cuspp;
+    } catch (e: any) {
+      if (volcar) diagnostico.push(`No se pudo leer Datos de Seguridad Social: ${e?.message ?? e}`);
+    }
+  }
+
+  /**
+   * Marca AFP u ONP leyendo EL CAMPO "Régimen pensionario".
+   *
+   * Devuelve si encontró algo, que es lo que decide si hace falta desplegar la
+   * sección o alcanza con lo que ya está leído.
+   *
+   * NO SE PUEDE BUSCAR "ONP" SUELTO EN LA PANTALLA. El volcado del 01/09/2026 mostró
+   * por qué: la ficha trae fijo el rótulo "Cobertura Pensión: 1 ONP 2 Seguro Privado",
+   * esté la persona en la ONP o no. Un `/\bONP\b/` sobre el texto entero marcaba en la
+   * ONP a cualquiera, incluido quien no tiene régimen cargado. El valor de verdad es
+   * el del campo: "DECRETO LEY 19990 - SISTEMA NACIONAL DE PENSIONES - ONP".
+   */
+  private marcarRegimen(texto: string, t: TrabajadorScrapeado): boolean {
+    const valor = this.valorTrasEtiqueta(texto, 'Régimen pensionario', [
+      'Consulta SBS', 'CUSPP', 'Fecha de Inicio', 'Validar SPP', 'Cobertura',
+    ]) ?? this.valorTrasEtiqueta(texto, 'Regimen pensionario', [
+      'Consulta SBS', 'CUSPP', 'Fecha de Inicio', 'Validar SPP', 'Cobertura',
+    ]);
+    if (!valor) return false;
+
+    if (/\bAFP\b|\bSPP\b|PRIVADO DE PENSIONES|Sistema Privado/i.test(valor)) {
+      t.regimen_pensionario = 'AFP';
+      return true;
+    }
+    if (/\bONP\b|19990|SISTEMA NACIONAL/i.test(valor)) {
+      t.regimen_pensionario = 'ONP';
+      return true;
+    }
+    return false;
   }
 
   /**
@@ -919,9 +1213,16 @@ export class SunatTregistroScrapingClient {
    * LAS ACCIONES SON ÍCONOS SIN TEXTO. En el volcado del 27/08/2026 cada fila salió
    * como "TRA · L.E / DNI - 40966442 · MORI SAAVEDRA JORGE LUIS · 13/07/1981 ·
    * Masculino · Activo · ·" — esas dos celdas vacías del final son los botones.
-   * Buscarlos por nombre accesible ("Editar") no sirve: no hay ningún texto que
-   * coincidir. Por eso, si falla la búsqueda por etiqueta, se hace clic en el
-   * elemento clickeable de la fila, empezando por el final.
+   * ⚠️ Y NO SON DOS BOTONES CUALESQUIERA. La captura del padrón del 01/09/2026 les
+   * puso nombre: las dos últimas columnas son "Modificar" y "Eliminar", y la de
+   * Eliminar es una X roja que DA DE BAJA al trabajador en el T-Registro real del
+   * cliente. La versión anterior, al no encontrar el ícono por etiqueta, clickeaba
+   * los elementos de la fila EMPEZANDO POR EL FINAL: el primero que habría probado
+   * era exactamente esa X. Nunca llegó a correr, pero estaba escrito y armado.
+   *
+   * Así que acá no hay búsqueda por posición ni por etiqueta: se clickea el enlace
+   * que llama a irModificar() y, si no está, se corta. Volver sin el sueldo de esa
+   * persona es barato; un clic a ciegas sobre esa fila, no.
    */
   private async abrirFicha(
     marco: Frame, page: Page, t: TrabajadorScrapeado,
@@ -940,32 +1241,16 @@ export class SunatTregistroScrapingClient {
       diagnostico.push(`HTML de la primera fila (para ubicar el botón de la ficha): ${html.slice(0, 1800)}`);
     }
 
-    // 1) Por etiqueta, para el caso fácil (si algún día ponen texto).
-    for (const etiqueta of s.ACCIONES_FICHA) {
-      for (const rol of ['link', 'button'] as const) {
-        const b = fila.getByRole(rol, { name: etiqueta }).first();
-        if (await this.intentarClic(page, b, `ficha ${t.numero_documento} [${etiqueta}]`, diagnostico)) return true;
-      }
-      // Los íconos suelen llevar el texto en title/alt aunque no se vea.
-      const porAtributo = fila.locator(
-        `[title*="${etiqueta}" i], [alt*="${etiqueta}" i], [aria-label*="${etiqueta}" i]`,
-      ).first();
-      if (await this.intentarClic(page, porAtributo, `ficha ${t.numero_documento} [attr=${etiqueta}]`, diagnostico)) return true;
-    }
+    // ÚNICO camino: el enlace que abre la ficha. En la fila conviven el ícono de
+    // Modificar y la X de Eliminar, y este selector distingue al bueno por su
+    // javascript:, que es lo único que los diferencia en el HTML.
+    const enlace = fila.locator(s.ENLACE_FICHA).first();
+    if (await this.intentarClic(page, enlace, `ficha ${t.numero_documento} [irModificar]`, diagnostico, 900)) return true;
 
-    // 2) Cualquier cosa clickeable de la fila, DE ATRÁS PARA ADELANTE: las acciones
-    //    van al final de la tabla, y así no se cae primero en un link del nombre.
-    const clickeables = fila.locator('a, button, img, input[type="image"], [onclick], i[class*="icon" i], span[class*="icon" i]');
-    const n = await clickeables.count().catch(() => 0);
-    for (let k = n - 1; k >= 0; k--) {
-      if (await this.intentarClic(page, clickeables.nth(k), `ficha ${t.numero_documento} [clickeable #${k} de ${n}]`, diagnostico)) {
-        return true;
-      }
-    }
-
-    if (volcarHtml) {
-      diagnostico.push(`No había ningún elemento clickeable en la fila (se probaron ${n}).`);
-    }
+    diagnostico.push(
+      `No se encontró "${s.ENLACE_FICHA}" en la fila de ${t.numero_documento}. No se prueba ` +
+      'nada más a propósito: la otra acción de esa fila es Eliminar.',
+    );
     return false;
   }
 
@@ -1104,7 +1389,17 @@ export class SunatTregistroScrapingClient {
       for (let i = bajo.indexOf(aguja); i >= 0; i = bajo.indexOf(aguja, i + aguja.length)) {
         if (/periodicidad|tipo de|forma de|modalidad/.test(bajo.slice(Math.max(0, i - 30), i))) continue;
 
-        const m = texto.slice(i, i + 120).match(s.PATRON_MONTO);
+        // Se sacan las fechas de la ventana ANTES de buscar el importe. Desde que
+        // el patrón acepta enteros sin decimales (la ficha trae "2000" pelado), un
+        // "01/11/2016" cerca de la etiqueta daría un sueldo de 1 sol.
+        // La ventana se corta en el rótulo siguiente. Sin ese corte, con el campo
+        // vacío llegaba hasta "Jornada laboral: 1 ..." y devolvía 1 como sueldo.
+        let ventana = texto.slice(i, i + 120).replace(/\d{1,2}\/\d{1,2}\/\d{2,4}/g, ' ');
+        for (const rotulo of ['Establecimiento', 'Jornada', 'Cod. Local', 'Situación', 'Situacion', 'Entidad']) {
+          const corte = ventana.indexOf(rotulo);
+          if (corte > 0) ventana = ventana.slice(0, corte);
+        }
+        const m = ventana.match(s.PATRON_MONTO);
         if (m) return m[1].replace(/,/g, '');
       }
     }
@@ -1113,52 +1408,258 @@ export class SunatTregistroScrapingClient {
 
   /**
    * Abre la pestaña "Trabajador" de la sección Categoría, que es donde vive lo
-   * laboral: remuneración, fecha de ingreso y régimen pensionario.
+   * laboral: remuneración y fecha de ingreso.
    *
    * La ficha abre en "Resumen de Prestadores", que solo lista qué categorías tiene la
    * persona — ahí no hay ningún sueldo. Leer el sueldo sin entrar a esta pestaña era
    * buscarlo donde no está (27/08/2026).
+   *
+   * ESPERA Y VERIFICA, no clickea a ciegas. La ficha se abre por POST DENTRO del
+   * iframe: cuando `intentarClic` da la página por cargada, la pestaña puede no estar
+   * montada todavía. La versión anterior clickeaba tras una espera fija y, si el clic
+   * "salía bien", daba la pestaña por abierta sin mirar qué había quedado en pantalla
+   * — un clic que cayó en el lugar equivocado se leía igual que uno bueno, y el
+   * trabajador terminaba sin sueldo y sin explicación. Eso es exactamente lo que le
+   * pasó al PRIMERO de la lista el 01/09/2026: su ficha tenía el monto a la vista y
+   * volvió vacío. Ahora se confirma que apareció el bloque "Datos laborales" y, si no
+   * apareció, se reintenta una vez tras esperar.
    */
   private async abrirPestanaTrabajador(
-    page: Page, s: typeof SunatTregistroScrapingClient.SELECTORES, diagnostico: string[],
+    page: Page,
+    s: typeof SunatTregistroScrapingClient.SELECTORES,
+    marcoFicha: Frame,
+    documento: string,
+    traza: string[],
+    diagnostico: string[],
   ): Promise<boolean> {
-    // El marco va EN LA DESCRIPCIÓN del clic. Sin eso el diagnóstico decía
-    // "OK — clic en pestaña Trabajador [tab]" sin manera de saber si se había
-    // pulsado la pestaña de la ficha o cualquier otra cosa del menú de SOL.
-    for (const marco of this.marcosOrdenados(page, s)) {
-      const donde = ` en ${this.donde(page, marco)}`;
+    for (let intento = 1; intento <= 2; intento++) {
+      // El marco va EN LA DESCRIPCIÓN del clic. Sin eso el diagnóstico decía
+      // "OK — clic en pestaña Trabajador [tab]" sin manera de saber si se había
+      // pulsado la pestaña de la ficha o cualquier otra cosa del menú de SOL.
+      for (const marco of this.marcosOrdenados(page, s)) {
+        const donde = ` en ${this.donde(page, marco)}`;
 
-      for (const rol of ['tab', 'link', 'button'] as const) {
-        const l = marco.getByRole(rol, { name: s.PESTANA_TRABAJADOR, exact: true }).first();
-        if (await this.intentarClic(page, l, `pestaña ${s.PESTANA_TRABAJADOR} [${rol}]${donde}`, diagnostico)) return true;
+        for (const rol of ['tab', 'link', 'button'] as const) {
+          const l = marco.getByRole(rol, { name: s.PESTANA_TRABAJADOR, exact: true }).first();
+          if (await this.intentarClic(page, l, `pestaña ${s.PESTANA_TRABAJADOR} [${rol}]${donde}`, diagnostico, 900)) {
+            if (await this.esperarDatosLaborales(page, s, marcoFicha, documento, 9_000)) return true;
+            traza.push(`clic en la pestaña [${rol}] sin la ficha poblada detrás`);
+          }
+        }
+
+        const porTexto = marco.getByText(s.PESTANA_TRABAJADOR, { exact: true }).first();
+        if (await this.intentarClic(page, porTexto, `pestaña ${s.PESTANA_TRABAJADOR} [texto]${donde}`, diagnostico, 900)) {
+          if (await this.esperarDatosLaborales(page, s, marcoFicha, documento, 9_000)) return true;
+          traza.push('clic en la pestaña [texto] sin la ficha poblada detrás');
+        }
       }
-      const porTexto = marco.getByText(s.PESTANA_TRABAJADOR, { exact: true }).first();
-      if (await this.intentarClic(page, porTexto, `pestaña ${s.PESTANA_TRABAJADOR} [texto]${donde}`, diagnostico)) return true;
+
+      if (intento === 1) {
+        traza.push('reintento de la pestaña tras esperar');
+        await page.waitForTimeout(3000);
+      }
     }
     return false;
   }
 
-  /** Vuelve del detalle al listado. Primero el botón del portal, después el back. */
-  private async volverAlPadron(page: Page, s: typeof SunatTregistroScrapingClient.SELECTORES): Promise<void> {
-    for (const etiqueta of s.ACCIONES_VOLVER) {
-      if (await this.clicEnMenu(page, etiqueta, [])) break;
+  /**
+   * Lee el valor de un campo de la ficha POR SU ETIQUETA, del DOM y no del texto.
+   *
+   * ESTO EXISTE POR UN SUELDO DE 1 SOL. Leyendo el texto corrido de la pantalla, con
+   * el campo del monto todavía vacío la ventana de búsqueda llegaba hasta el rótulo
+   * de al lado —"Jornada laboral: 1 Jornada de trabajo máxima"— y se traía ese 1.
+   * Un null se ve y se corrige; un 1 se importa y termina en una boleta. El
+   * trabajador tenía 1130 en su ficha.
+   *
+   * Acotar a la celda de la etiqueta y a la siguiente es la parte que importa: el
+   * valor del campo de al lado nunca puede colarse, esté vacío el nuestro o no.
+   *
+   * Devuelve el valor, o '' si la etiqueta está pero el campo está vacío (que es un
+   * dato, no un fallo), o null si no se encontró la etiqueta.
+   */
+  private async valorDeCampo(marco: Frame, etiquetas: string[]): Promise<string | null> {
+    return marco.evaluate((ets: string[]) => {
+      const norm = (s: string | null) => (s || '')
+        .toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+        .replace(/\s+/g, ' ').trim();
+      const objetivos = ets.map(norm).filter(Boolean);
+
+      // NO TODO <input> ES UN CAMPO. Dojo arma cada caja de texto con varios:
+      //   <input class="dijitInputInner" value="2000">        ← el valor de verdad
+      //   <input class="dijitValidationInner" value="Χ">      ← el ícono de validación
+      // Tomar "el primero con valor" devolvía SIEMPRE esa Χ, y con ella el sueldo se
+      // perdía en las once fichas. Esa Χ es la misma que se ve por toda la pantalla
+      // en los volcados: no es basura del texto, son inputs de adorno.
+      const valorEn = (caja: Element | null | undefined): string | null => {
+        if (!caja) return null;
+
+        const utiles = Array.from(caja.querySelectorAll('input'))
+          .map((i) => i as HTMLInputElement)
+          .filter((e) => {
+            if (['button', 'submit', 'image', 'checkbox', 'radio'].includes(e.type)) return false;
+            if (/validation|arrowbutton|spinner|downarrow|clear/i.test(String(e.className || ''))) return false;
+            const v = (e.value || '').trim();
+            if (!v) return false;
+            // Un solo carácter que no es letra ni número es un adorno (Χ, ▼, ✕).
+            return !(v.length <= 1 && !/[0-9a-zA-Z]/.test(v));
+          });
+
+        // Preferencias: el input propio de dijit, después cualquiera visible, y por
+        // último uno oculto (dojo a veces guarda ahí el valor que se envía).
+        const elegido = utiles.find((e) => /dijitInputInner/i.test(String(e.className || '')))
+          ?? utiles.find((e) => e.type !== 'hidden')
+          ?? utiles[0];
+        return elegido ? (elegido.value || '').trim() : null;
+      };
+
+      for (const n of Array.from(document.querySelectorAll('td, th, label, span, div, b'))) {
+        // Texto PROPIO del nodo: con textContent, cualquier contenedor grande
+        // "contiene" la etiqueta y el campo que se encontraría sería otro.
+        const propio = norm(Array.from(n.childNodes)
+          .filter((c) => c.nodeType === 3)
+          .map((c) => c.textContent)
+          .join(' '));
+        if (!propio || !objetivos.some((o) => propio.includes(o))) continue;
+
+        const celda = n.closest('td') ?? n;
+        return valorEn(celda) ?? valorEn(celda.nextElementSibling) ?? '';
+      }
+      return null;
+    }, etiquetas);
+  }
+
+  /**
+   * ¿La ficha está mostrando el bloque laboral, el que tiene el sueldo?
+   *
+   * Es la diferencia entre "el clic no dio error" y "la pantalla que buscábamos está
+   * delante". Solo lo segundo sirve.
+   */
+  private async hayDatosLaborales(
+    page: Page, s: typeof SunatTregistroScrapingClient.SELECTORES, marcoFicha: Frame,
+    documento: string,
+  ): Promise<boolean> {
+    const marco = this.marcoTregistro(page) ?? marcoFicha;
+    const texto = await this.textoDeMarco(marco);
+
+    // NO ALCANZA CON QUE ESTÉ EL TÍTULO "Datos laborales": el armazón de la ficha se
+    // dibuja ANTES que los datos. La corrida del 01/09/2026 leyó una ficha con todos
+    // los campos en blanco y se dio por buena.
+    if (!/datos laborales/i.test(texto) || !texto.includes(documento)) return false;
+
+    // Y TAMPOCO ALCANZA CON EL DNI. El documento vive en "Datos de Identificacion",
+    // que se puebla ANTES que el bloque laboral: la ficha de DIOSES GONZALES pasó
+    // este control con la identificación ya cargada y los datos laborales todavía
+    // vacíos, así que el sueldo y la fecha salieron nulos mientras el régimen
+    // pensionario —que se lee un instante después— sí llegó. Diez de once bien y uno
+    // en blanco, sin ningún error.
+    //
+    // El marcador tiene que ser DEL PROPIO BLOQUE LABORAL. Se usa la fecha de inicio
+    // del periodo laboral porque en el T-Registro es obligatoria para todo
+    // trabajador: si no está, la pantalla no terminó de cargar. El monto no sirve
+    // para esto — puede estar legítimamente vacío.
+    const periodo = await this.valorDeCampo(marco, ['Periodo laboral']);
+    return !!periodo && /^\d{2}\/\d{2}\/\d{4}/.test(periodo.trim());
+  }
+
+  /**
+   * Espera a que el bloque laboral termine de poblarse, sondeando.
+   *
+   * Una sola comprobación justo después del clic es una foto en el peor momento: la
+   * ficha se arma por partes y cada trabajador tarda distinto. Sondear sale apenas
+   * los datos están, y solo espera de verdad cuando hace falta.
+   */
+  private async esperarDatosLaborales(
+    page: Page, s: typeof SunatTregistroScrapingClient.SELECTORES, marcoFicha: Frame,
+    documento: string, ms: number,
+  ): Promise<boolean> {
+    const hasta = Date.now() + ms;
+    for (;;) {
+      if (await this.hayDatosLaborales(page, s, marcoFicha, documento)) return true;
+      if (Date.now() >= hasta) return false;
+      await page.waitForTimeout(800);
+    }
+  }
+
+  /**
+   * Vuelve del detalle al listado, y DICE CÓMO lo consiguió.
+   *
+   * EL ORDEN ES EL RESULTADO DE TRES SESIONES GASTADAS (01/09/2026):
+   *
+   *  1. RECARGAR EL IFRAME con la URL del padrón. La app del T-Registro vive en su
+   *     propio iframe (prestadores.htm?hc&token=…) y esa URL ya la conocemos: es
+   *     donde encontramos el padrón la primera vez. Es una navegación de solo
+   *     lectura, determinista, y no depende de acertarle a ningún botón. Va PRIMERO
+   *     por eso, no por descarte.
+   *
+   *  2. El botón "Retornar" de la ficha, buscado SOLO dentro del marco del
+   *     T-Registro y sin escaneo. La versión anterior lo buscaba con `clicEnMenu`,
+   *     que está hecho para el árbol del menú: por cada etiqueta ('Retornar',
+   *     'Regresar', 'Volver', 'Cancelar') y por cada marco recorre hasta 600
+   *     elementos pidiendo el innerText de uno en uno. Son miles de idas y vueltas
+   *     al navegador POR FICHA, y encima terminaban en nada. Eso —no el scraping—
+   *     fue lo que llevó la petición por encima del techo de tiempo.
+   *
+   *  3. Rehacer el salto del menú. Último, porque ya se comprobó que el clic sale
+   *     "OK" y el iframe sigue mostrando la ficha: que el menú responda no quiere
+   *     decir que la app de adentro se haya movido.
+   */
+  private async volverAlPadron(
+    page: Page,
+    s: typeof SunatTregistroScrapingClient.SELECTORES,
+    urlPadron: string | null,
+    diagnostico: string[] = [],
+  ): Promise<string> {
+    const marco = this.marcoTregistro(page);
+
+    if (urlPadron && marco) {
+      const fallo = await marco
+        .goto(urlPadron, { waitUntil: 'domcontentloaded', timeout: 20_000 })
+        .then(() => null)
+        .catch((e: any) => String(e?.message ?? e).split(String.fromCharCode(10))[0]);
+      if (fallo) diagnostico.push(`No se pudo recargar el iframe del padrón: ${fallo.slice(0, 140)}`);
+      if (await this.esperarPadron(page, s, 10_000)) return 'volvió recargando el iframe';
     }
 
-    // VERIFICAR, NO SUPONER. La ficha se abre por POST DENTRO del iframe, así que el
-    // historial de la página principal no se movió y `goBack` no devuelve al padrón.
-    // Antes se daba por bueno el "Retornar" y la vuelta fallida se manifestaba una
-    // iteración más tarde como "no se encontró cómo abrir la ficha de <el siguiente>",
-    // que hace buscar el problema en la fila equivocada.
-    if (await this.hayPadron(page, s)) return;
+    // Búsqueda ACOTADA: el marco de la ficha y nada más, por rol y por texto exacto.
+    // Sin el escaneo elemento por elemento, que es lo caro.
+    const marcoFicha = this.marcoTregistro(page) ?? page.mainFrame();
+    for (const etiqueta of s.ACCIONES_VOLVER) {
+      const candidatos = [
+        marcoFicha.getByRole('button', { name: etiqueta }).first(),
+        marcoFicha.getByRole('link', { name: etiqueta }).first(),
+        marcoFicha.getByText(etiqueta, { exact: true }).first(),
+      ];
+      for (const c of candidatos) {
+        if (await this.intentarClic(page, c, `${etiqueta} (ficha)`, diagnostico, 900)) {
+          if (await this.esperarPadron(page, s, 10_000)) return `volvió por "${etiqueta}"`;
+        }
+      }
+    }
 
-    await page.goBack({ waitUntil: 'domcontentloaded', timeout: 15_000 }).catch(() => {});
-    await page.waitForTimeout(1500);
-    if (await this.hayPadron(page, s)) return;
+    if (await this.esperarPadron(page, s, 2_000)) return 'volvió solo';
 
-    // Último recurso: rehacer el último salto del menú. Cuesta unos segundos, pero
-    // mucho menos que abortar el padrón entero y gastar otro login (el WAF cuenta).
-    await this.clicEnMenu(page, s.MENU_REGISTRO_INDIVIDUAL, []);
-    await page.waitForTimeout(1500);
+    await this.clicEnMenu(page, s.MENU_REGISTRO_INDIVIDUAL, diagnostico);
+    return (await this.esperarPadron(page, s, 10_000))
+      ? 'volvió rehaciendo el menú'
+      : 'NO VOLVIÓ al padrón';
+  }
+
+  /**
+   * Sondea hasta que el padrón esté en pantalla, o se acabe el tiempo.
+   *
+   * La grilla del T-Registro es dojox y se llena por XHR: "está cargada la página" y
+   * "están las filas" son dos momentos distintos, y entre uno y otro puede haber
+   * varios segundos.
+   */
+  private async esperarPadron(
+    page: Page, s: typeof SunatTregistroScrapingClient.SELECTORES, ms: number,
+  ): Promise<boolean> {
+    const hasta = Date.now() + ms;
+    for (;;) {
+      if (await this.hayPadron(page, s)) return true;
+      if (Date.now() >= hasta) return false;
+      await page.waitForTimeout(750);
+    }
   }
 
   /** ¿Hay un marco mostrando el padrón, con sus enlaces a las fichas? */
@@ -1176,8 +1677,10 @@ export class SunatTregistroScrapingClient {
    * clic no lo encontraba, porque el buscador miraba menos etiquetas HTML que el
    * volcador. Ver el tag y el rol de una vez evita ese ida y vuelta.
    */
-  private async lupaSobre(page: Page, aguja: string, diagnostico: string[]) {
+  private async lupaSobre(page: Page | Frame, aguja: string, diagnostico: string[]) {
     try {
+      // Page o Frame: la ficha vive DENTRO del iframe del T-Registro, así que mirar
+      // solo la página principal era mirar el armazón del menú y nada más.
       const encontrados = await page.evaluate((texto) => {
         const salida: string[] = [];
         const nodos = Array.from(document.querySelectorAll('*'));

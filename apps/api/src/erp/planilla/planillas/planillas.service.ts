@@ -1,8 +1,10 @@
 import { Injectable, NotFoundException, ConflictException, BadRequestException } from '@nestjs/common';
 import { DataSource } from 'typeorm';
 import { InjectDataSource } from '@nestjs/typeorm';
+import type { Response } from 'express';
 import { AuditoriaService } from '@app/common';
 import { MotorCalculoService } from './motor-calculo.service';
+import { BoletaPdfService } from './boleta-pdf.service';
 import {
   CreatePlanillaDto, CreateEntradaDatoDto, GuardarTareoDto,
 } from './dto/planilla.dto';
@@ -16,6 +18,7 @@ export class PlanillasService {
     @InjectDataSource('ESTUDIOBARBA_CONN') private dataSource: DataSource,
     private auditoriaService: AuditoriaService,
     private motor: MotorCalculoService,
+    private boletaPdf: BoletaPdfService,
   ) {}
 
   // ==========================================================================
@@ -426,6 +429,15 @@ export class PlanillasService {
       descuentos: conceptos.filter((c: any) => c.tipo === 'DESCUENTO'),
       aportes: conceptos.filter((c: any) => c.tipo === 'APORTE_EMPLEADOR'),
     };
+  }
+
+  /**
+   * La misma boleta de `findBoleta`, pero impresa en PDF. El maquetado vive en
+   * `BoletaPdfService` porque el portal cliente descarga exactamente este documento.
+   */
+  async exportarBoletaPdf(idPlanilla: number, idTrabajador: number, res: Response) {
+    const boleta = await this.findBoleta(idPlanilla, idTrabajador);
+    await this.boletaPdf.generar(boleta, res);
   }
 
   async findProvisiones(idPlanilla: number) {

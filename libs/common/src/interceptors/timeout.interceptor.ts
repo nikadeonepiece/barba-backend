@@ -31,7 +31,11 @@ const RUTAS_LARGAS: Array<{ patron: RegExp; ms: number }> = [
   // Se listan por el sufijo de la acción y no por el prefijo del módulo: la ruta
   // real lleva el id de empresa en el medio
   // (/planilla/trabajadores/empresas/57/consultar-tregistro).
-  { patron: /\/consultar-tregistro/i, ms: 180_000 },
+  // 10 minutos y no 3: el T-Registro no trae el sueldo en el listado, así que hay
+  // que ABRIR LA FICHA DE CADA TRABAJADOR. El tiempo crece con la planilla — 11
+  // fichas rozaban los 3 minutos y la petición se cortaba con la lectura casi
+  // terminada, que es el peor momento posible: se gastó la sesión de SUNAT igual.
+  { patron: /\/consultar-tregistro/i, ms: 600_000 },
   { patron: /\/abrir-tregistro/i, ms: 180_000 },
   // Asistentes de IA: dependen de la latencia del modelo (antes /vencimientos/fase3/).
   { patron: /\/vencimientos\/asistentes-ia\//i, ms: 60_000 },

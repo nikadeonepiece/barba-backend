@@ -88,8 +88,23 @@ export class AuthService {
     return null;
   }
 
-  private firmarAccessToken(user: { id_usuario: number; correo: string; id_rol: number }) {
-    return this.jwtService.sign({ sub: user.id_usuario, username: user.correo, roleId: user.id_rol });
+  /**
+   * `idEmpresa` viaja DENTRO del token porque es una decisión de autorización, no un
+   * dato de pantalla: los endpoints del portal cliente lo usan como scope del WHERE.
+   * Firmarlo acá y leerlo en `JwtStrategy.validate()` es lo que impide que el cliente
+   * elija sobre qué empresa consulta.
+   *
+   * `?? null` explícito: `undefined` no sobrevive a `JSON.stringify` y el campo
+   * desaparecería del payload, dejando un token indistinguible del de un usuario del
+   * estudio — es decir, sin candado.
+   */
+  private firmarAccessToken(user: { id_usuario: number; correo: string; id_rol: number; id_empresa?: number | null }) {
+    return this.jwtService.sign({
+      sub: user.id_usuario,
+      username: user.correo,
+      roleId: user.id_rol,
+      idEmpresa: user.id_empresa ?? null,
+    });
   }
 
   async login(loginDto: LoginDto, ip: string | null = null, userAgent: string | null = null) {
@@ -103,6 +118,15 @@ export class AuthService {
 
     if (!passwordValida) {
       throw new UnauthorizedException('Credenciales incorrectas');
+    }
+
+    // Usuario del PORTAL CLIENTE cuya empresa ya no lleva el estudio: se corta el
+    // login acá y no en cada endpoint. Dar de baja la empresa no borra a sus usuarios
+    // (la FK es RESTRICT a propósito), así que sin este control seguirían entrando a
+    // ver datos de una relación comercial terminada. El mensaje es genérico: quién es
+    // cliente del estudio no es información que deba filtrarse en un login.
+    if (user.id_empresa && (user.empresa_estado_registro !== 'ACTIVO' || user.empresa_estado_cliente !== 'ACTIVO')) {
+      throw new UnauthorizedException('Credenciales incorrectas o usuario inactivo');
     }
 
     let esPrimeraSesion = false;
@@ -121,7 +145,11 @@ export class AuthService {
         apellidos: user.apellidos,
         correo: user.correo,
         id_rol: user.id_rol,
-        nombre_rol: user.rol
+        nombre_rol: user.rol,
+        // Solo para MOSTRAR de qué empresa es la sesión en el portal. La
+        // autorización nunca lee esto: sale del token (ver firmarAccessToken).
+        id_empresa: user.id_empresa ?? null,
+        empresa: user.empresa ?? null,
       }
     };
   }
@@ -166,7 +194,15 @@ export class AuthService {
     );
 
     return {
-      access_token: this.firmarAccessToken({ id_usuario: user.data.id_usuario, correo: user.data.correo, id_rol: user.data.id_rol }),
+      // `id_empresa` se relee de la BD en cada refresh (viene de `sis_usuario_obtener`)
+      // en vez de arrastrarse del token anterior: si al usuario le cambiaron la empresa
+      // o se la quitaron, el token nuevo ya sale con el scope corregido.
+      access_token: this.firmarAccessToken({
+        id_usuario: user.data.id_usuario,
+        correo: user.data.correo,
+        id_rol: user.data.id_rol,
+        id_empresa: user.data.id_empresa ?? null,
+      }),
       refreshTokenPlano: nuevoRefreshTokenPlano,
     };
   }

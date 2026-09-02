@@ -22,7 +22,22 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
 
   // Si el token es real y no ha caducado, esta función extrae los datos del usuario
   // para que podamos usarlos dentro de nuestra API (ej: saber quién está creando un producto).
+  //
+  // `idEmpresa` es el scope del PORTAL CLIENTE: sale de `sis_usuario.id_empresa` y es
+  // lo que los services de `erp/cliente/` meten en el WHERE de cada consulta. Se lee
+  // del TOKEN y nunca del body/query — si viniera del frontend, cambiar un número en
+  // la petición dejaría ver la planilla de otra empresa.
+  //
+  // `null` para el personal del estudio (no está atado a ninguna empresa). Se
+  // normaliza acá y no en cada service: un token viejo, firmado antes de que existiera
+  // la columna, no trae el campo, y `undefined` colándose hasta un array de params de
+  // MySQL no falla — devuelve 0 filas y parece "sin datos" en vez de un error.
   async validate(payload: any) {
-    return { userId: payload.sub, email: payload.username, roleId: payload.roleId };
+    return {
+      userId: payload.sub,
+      email: payload.username,
+      roleId: payload.roleId,
+      idEmpresa: payload.idEmpresa ?? null,
+    };
   }
 }

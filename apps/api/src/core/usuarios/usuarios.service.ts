@@ -1,5 +1,5 @@
 import { Injectable, ConflictException, NotFoundException, BadRequestException } from '@nestjs/common';
-import { DataSource } from 'typeorm';
+import { DataSource, QueryRunner } from 'typeorm';
 import { InjectDataSource } from '@nestjs/typeorm';
 import { AuditoriaService } from '@app/common';
 import * as bcrypt from 'bcrypt';
@@ -20,6 +20,48 @@ export class UsuariosService {
     return { success: true, data };
   }
 
+  /**
+   * Empresas que se pueden asignar a un usuario del portal cliente. Alimenta el
+   * ng-select de la pantalla de usuarios; pide `ver_usuario` como el resto de la
+   * pantalla, no un permiso de catálogos.
+   */
+  async getEmpresas() {
+    const data = await this.dataSource.query(
+      `SELECT id_empresa, razon_social, ruc FROM empresa
+       WHERE estado_registro = 'ACTIVO' AND estado_cliente = 'ACTIVO'
+       ORDER BY razon_social ASC`,
+    );
+    return { success: true, data };
+  }
+
+  /**
+   * Traduce el `id_empresa` que llegó del formulario a lo que se graba, y falla si no
+   * corresponde. Es el único punto donde se acepta un id de empresa desde afuera: si
+   * pasara uno inexistente o de una empresa dada de baja, el usuario quedaría con un
+   * scope que no resuelve y el portal le respondería 403 sin explicar por qué.
+   *
+   * Recibe el `QueryRunner` en vez de abrir uno propio porque siempre se llama dentro
+   * de la transacción de create/update (regla de transacciones anidadas de CLAUDE.md).
+   */
+  private async validarEmpresaDelUsuario(queryRunner: QueryRunner, idEmpresa?: number | null): Promise<number | null> {
+    if (idEmpresa === null || idEmpresa === undefined) return null;
+
+    const id = Number(idEmpresa);
+    if (!id || Number.isNaN(id)) throw new BadRequestException('ID de empresa inválido');
+
+    const [empresa] = await queryRunner.query(
+      `SELECT id_empresa FROM empresa
+       WHERE id_empresa = ? AND estado_registro = 'ACTIVO' AND estado_cliente = 'ACTIVO'`,
+      [id],
+    );
+    if (!empresa) {
+      throw new BadRequestException(
+        'La empresa indicada no existe o ya no es cliente del estudio. Elegí una empresa activa, o dejá el campo vacío si el usuario es del estudio.',
+      );
+    }
+    return id;
+  }
+
   async create(dto: CreateUsuarioDto, userId: number) {
     const queryRunner = this.dataSource.createQueryRunner();
     await queryRunner.connect();
@@ -28,15 +70,20 @@ export class UsuariosService {
     try {
       const hashedPassword = await bcrypt.hash(dto.password, 10);
 
-      // Enviamos NULL al parámetro de id_cliente del SP, ya que el Core no maneja clientes.
+      // El 2º parámetro del SP era `p_id_cliente` y se mandaba NULL fijo porque no
+      // se usaba. Ahora es `p_id_empresa` y SÍ se graba: con valor, el usuario queda
+      // atado a esa empresa y entra al portal cliente viendo solo lo suyo; sin valor
+      // (NULL), es personal del estudio y no tiene ese candado.
+      const idEmpresa = await this.validarEmpresaDelUsuario(queryRunner, dto.id_empresa);
+
       const [[result]] = await queryRunner.query(
         `CALL sis_usuario_crear(?, ?, ?, ?, ?, ?)`,
-        [dto.id_rol, null, dto.nombres.trim().toUpperCase(), dto.apellidos.trim().toUpperCase(), dto.correo.trim().toLowerCase(), hashedPassword]
+        [dto.id_rol, idEmpresa, dto.nombres.trim().toUpperCase(), dto.apellidos.trim().toUpperCase(), dto.correo.trim().toLowerCase(), hashedPassword]
       );
 
       const idUsuarioNuevo = result.id_insertado;
 
-      await this.auditoriaService.registrarConTransaccion(queryRunner, 'sis_usuario', idUsuarioNuevo, 'CREAR', userId, null, { correo: dto.correo, rol: dto.id_rol });
+      await this.auditoriaService.registrarConTransaccion(queryRunner, 'sis_usuario', idUsuarioNuevo, 'CREAR', userId, null, { correo: dto.correo, rol: dto.id_rol, id_empresa: idEmpresa });
       await queryRunner.commitTransaction();
       return { success: true, message: 'Usuario base registrado exitosamente', id: idUsuarioNuevo };
     } catch (error: any) {
@@ -70,13 +117,20 @@ export class UsuariosService {
       const apellidos = dto.apellidos ? dto.apellidos.trim().toUpperCase() : antiguo.data.apellidos;
       const correo = dto.correo ? dto.correo.trim().toLowerCase() : antiguo.data.correo;
 
+      // `id_empresa` se compara contra `undefined`, no con `||`: mandar `null` es la
+      // forma de DESATAR a un usuario de su empresa (pasarlo a personal del estudio),
+      // y con `||` ese null caería al valor anterior y el cambio se perdería en silencio.
+      const idEmpresa = dto.id_empresa === undefined
+        ? (antiguo.data.id_empresa ?? null)
+        : await this.validarEmpresaDelUsuario(queryRunner, dto.id_empresa);
+
       // 🔥 FIX CRÍTICO APLICADO AQUÍ: El orden exacto de los parámetros para sis_usuario_actualizar
       await queryRunner.query(
-        `CALL sis_usuario_actualizar(?, ?, ?, ?, ?)`,
-        [id, dto.id_rol || antiguo.data.id_rol, nombres, apellidos, correo]
+        `CALL sis_usuario_actualizar(?, ?, ?, ?, ?, ?)`,
+        [id, dto.id_rol || antiguo.data.id_rol, idEmpresa, nombres, apellidos, correo]
       );
 
-      await this.auditoriaService.registrarConTransaccion(queryRunner, 'sis_usuario', id, 'ACTUALIZAR', userId, antiguo.data, { id_rol: dto.id_rol, nombres, apellidos, correo });
+      await this.auditoriaService.registrarConTransaccion(queryRunner, 'sis_usuario', id, 'ACTUALIZAR', userId, antiguo.data, { id_rol: dto.id_rol, id_empresa: idEmpresa, nombres, apellidos, correo });
       await queryRunner.commitTransaction();
       return { success: true, message: 'Usuario actualizado correctamente' };
     } catch (error: any) {

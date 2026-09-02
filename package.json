@@ -17,7 +17,12 @@
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
-    "test:e2e": "jest --config ./apps/erp-backend/test/jest-e2e.json"
+    "test:e2e": "jest --config ./apps/erp-backend/test/jest-e2e.json",
+    "deploy": "node scripts/deploy-guard.js && nest build && ssh barba \"cd ~/barba.difusioneslaborales.com/api && mkdir -p tmp && cp -f main.js main.js.bak 2>/dev/null; true\" && scp dist/apps/api/main.js barba:~/barba.difusioneslaborales.com/api/main.js && ssh barba \"touch ~/barba.difusioneslaborales.com/api/tmp/restart.txt\" && echo DESPLEGADO - probar login y el tablero de vencimientos",
+    "deploy:ok": "node scripts/deploy-guard.js && ssh barba \"rm -f ~/barba.difusioneslaborales.com/api/main.js.bak\" && echo respaldo borrado",
+    "deploy:rollback": "node scripts/deploy-guard.js && ssh barba \"cd ~/barba.difusioneslaborales.com/api && mv main.js.bak main.js && touch tmp/restart.txt\" && echo REVERTIDO",
+    "restart": "node scripts/deploy-guard.js && ssh barba \"touch ~/barba.difusioneslaborales.com/api/tmp/restart.txt\" && echo REINICIADA",
+    "logs": "ssh barba \"tail -f ~/barba.difusioneslaborales.com/api/stderr.log\""
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.120.0",

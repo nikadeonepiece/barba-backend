@@ -35,7 +35,7 @@ async function bootstrap() {
   app.enableCors({
     origin: [
       'http://localhost:4200',
-      'http://localhost:58745',
+      'http://localhost:55948',
       'http://barba.difusioneslaborales.com',
       // El frontend de producción (environment.ts) apunta a HTTPS — sin este origen
       // el navegador bloquea por CORS toda llamada al API si no se sirve same-origin.
@@ -59,11 +59,19 @@ async function bootstrap() {
   app.useGlobalInterceptors(new TimeoutInterceptor(), new TransformInterceptor());
   app.useGlobalFilters(new AllExceptionsFilter());
 
-  // 🔥 NUEVO: Exponer la carpeta "uploads" para que el frontend pueda descargar/ver los archivos
-  // Se asume que la carpeta 'uploads' estará en la raíz del backend
-  app.useStaticAssets(join(__dirname, '..', '..', '..', 'uploads'), {
-    prefix: '/uploads/',
-  });
+  // Expone la carpeta "uploads" para que el frontend pueda descargar/ver los archivos.
+  //
+  // Se sirve desde process.cwd() PRIMERO y desde __dirname como respaldo, porque las
+  // dos rutas apuntan a lugares distintos según dónde corra el proceso:
+  //   - en la PC:  el bundle está en dist/apps/api/, así que __dirname/../../..
+  //                cae en la raíz del proyecto — igual que cwd.
+  //   - en cPanel: main.js vive en la RAÍZ de la app (no hay carpeta dist/), así que
+  //                __dirname/../../.. se sale de la app y cae en /home/difusion.
+  //                cwd, en cambio, Passenger lo fija en la raíz de la app: correcto.
+  // El resto del backend (storage-privado/, logs/) ya usa process.cwd(); ésta era la
+  // única ruta que no lo hacía.
+  app.useStaticAssets(join(process.cwd(), 'uploads'), { prefix: '/uploads/' });
+  app.useStaticAssets(join(__dirname, '..', '..', '..', 'uploads'), { prefix: '/uploads/' });
 
   const port = process.env.PORT || 3777;
   await app.listen(port);

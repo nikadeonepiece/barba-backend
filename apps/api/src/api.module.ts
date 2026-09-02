@@ -19,6 +19,9 @@ import { VencimientosModule } from './erp/vencimientos/vencimientos.module';
 import { ConfiguracionesModule } from './erp/configuracion/configuraciones.module';
 import { PlanillaModule } from './erp/planilla/planilla.module';
 
+// --- Portal del cliente: la empresa entra a ver SU personal y SUS planillas ---
+import { ClienteModule } from './erp/cliente/cliente.module';
+
 @Module({
   imports: [
     ScheduleModule.forRoot(),
@@ -33,6 +36,7 @@ import { PlanillaModule } from './erp/planilla/planilla.module';
     VencimientosModule,
     ConfiguracionesModule,
     PlanillaModule,
+    ClienteModule,
   ],
   controllers: [ApiController],
   providers: [ApiService],

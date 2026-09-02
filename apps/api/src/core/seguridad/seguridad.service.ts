@@ -43,7 +43,9 @@ export class SeguridadService {
       const id = result[0][0].id_insertado;
       await this.auditoriaService.registrarConTransaccion(queryRunner, 'sis_rol', id, 'CREAR', userId, null, dto);
       await queryRunner.commitTransaction();
-      return { success: true, message: 'Rol creado exitosamente' };
+      // Se devuelve el id: la pantalla deja seleccionado el rol recien creado para
+      // marcarle los permisos ahi mismo. Sin esto tenia que buscarlo en el combo.
+      return { success: true, message: 'Rol creado exitosamente', data: { id_insertado: id } };
     } catch (error: any) {
       await queryRunner.rollbackTransaction();
       if (error.message.includes('uk_nombre_rol')) throw new ConflictException('El nombre del rol ya existe.');

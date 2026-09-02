@@ -32,16 +32,21 @@ export class TrabajadoresController {
     return this.service.abrirTregistro(idEmpresa, req.user.userId);
   }
 
-  // Devuelve el padrón para revisión, NO crea trabajadores: la navegación interna
-  // del T-Registro aún no está verificada (ver guía TREG).
+  // Devuelve el padrón para revisión, NO crea trabajadores. El recorrido ya está
+  // verificado (11/11 el 01/09/2026, ver guía TREG), pero la vista previa se queda:
+  // lo que trae es la remuneración de INGRESO, no la de hoy, y eso lo tiene que
+  // mirar una persona antes de que entre a la planilla.
   @RequirePermissions('VENCIMIENTOS_TRIBUTARIO', 'ver_credenciales_sunat')
   @Post('empresas/:idEmpresa/consultar-tregistro')
   consultarTregistro(
     @Param('idEmpresa', ParseIntPipe) idEmpresa: number,
     @Query('supervisado') supervisado: string,
+    // Modo exploración: no lee el padrón, va a ver qué ofrece "Consultas y reportes".
+    // No lo usa la pantalla; se dispara a mano mientras se decide el camino bueno.
+    @Query('explorar') explorar: string,
     @Req() req: any,
   ) {
-    return this.service.consultarTregistro(idEmpresa, supervisado !== 'false', req.user.userId);
+    return this.service.consultarTregistro(idEmpresa, supervisado !== 'false', req.user.userId, explorar === 'true');
   }
 
   @RequirePermissions('PLANILLA', 'editar_config_empresa_planilla')

@@ -113,6 +113,7 @@ DROP TABLE IF EXISTS `sis_usuario`;
 CREATE TABLE `sis_usuario` (
   `id_usuario` int NOT NULL AUTO_INCREMENT COMMENT 'Llave primaria del usuario',
   `id_rol` int NOT NULL COMMENT 'Rol asignado al usuario',
+  `id_empresa` int DEFAULT NULL COMMENT 'Empresa cliente a la que pertenece el usuario. NULL = usuario del estudio (ve todas las empresas). Con valor = usuario del PORTAL CLIENTE: el backend acota TODA consulta a esta empresa (ver erp/cliente/). Sin esta columna no hay forma de impedir que un cliente lea la planilla de otro cambiando el ID en la URL',
   `nombres` varchar(100) NOT NULL COMMENT 'Nombres del usuario',
   `apellidos` varchar(100) NOT NULL COMMENT 'Apellidos del usuario',
   `correo` varchar(150) NOT NULL COMMENT 'Correo usado para el login',
@@ -123,8 +124,13 @@ CREATE TABLE `sis_usuario` (
   PRIMARY KEY (`id_usuario`),
   UNIQUE KEY `correo` (`correo`),
   KEY `fk_sis_usuario_rol` (`id_rol`),
-  CONSTRAINT `fk_sis_usuario_rol` FOREIGN KEY (`id_rol`) REFERENCES `sis_rol` (`id_rol`) ON DELETE RESTRICT
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='MÓDULO: Seguridad. Usuarios con acceso al sistema web.';
+  KEY `fk_sis_usuario_empresa` (`id_empresa`),
+  CONSTRAINT `fk_sis_usuario_rol` FOREIGN KEY (`id_rol`) REFERENCES `sis_rol` (`id_rol`) ON DELETE RESTRICT,
+  -- RESTRICT y no CASCADE: borrar una empresa NO debe borrar en silencio a las
+  -- personas que entran por el portal. Si hay que dar de baja la empresa, primero
+  -- se desactivan sus usuarios y eso queda visible.
+  CONSTRAINT `fk_sis_usuario_empresa` FOREIGN KEY (`id_empresa`) REFERENCES `empresa` (`id_empresa`) ON DELETE RESTRICT
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='MÓDULO: Seguridad. Usuarios con acceso al sistema web (estudio y portal cliente).';
 DROP TABLE IF EXISTS `sis_accion`;
 /*!50503 SET character_set_client = utf8mb4 */;
 CREATE TABLE `sis_accion` (
@@ -404,11 +410,14 @@ DELIMITER ;
 /*!50003 SET sql_mode              = 'ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION' */ ;
 DELIMITER ;;
 CREATE PROCEDURE `sis_usuario_actualizar`(
-    IN p_id INT, IN p_id_rol INT, IN p_nombres VARCHAR(100),
-    IN p_apellidos VARCHAR(100), IN p_correo VARCHAR(150)
+    IN p_id INT, IN p_id_rol INT, IN p_id_empresa INT,
+    IN p_nombres VARCHAR(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
+    IN p_apellidos VARCHAR(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
+    IN p_correo VARCHAR(150) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
 )
 BEGIN
-    UPDATE sis_usuario SET id_rol = p_id_rol, nombres = p_nombres, apellidos = p_apellidos, correo = p_correo
+    UPDATE sis_usuario SET id_rol = p_id_rol, id_empresa = p_id_empresa,
+           nombres = p_nombres, apellidos = p_apellidos, correo = p_correo
     WHERE id_usuario = p_id;
 END ;;
 DELIMITER ;
@@ -427,12 +436,17 @@ DELIMITER ;
 /*!50003 SET sql_mode              = 'ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION' */ ;
 DELIMITER ;;
 CREATE PROCEDURE `sis_usuario_crear`(
-    IN p_id_rol INT, IN p_id_cliente INT, IN p_nombres VARCHAR(100),
-    IN p_apellidos VARCHAR(100), IN p_correo VARCHAR(150), IN p_password VARCHAR(255)
+    IN p_id_rol INT, IN p_id_empresa INT, IN p_nombres VARCHAR(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
+    IN p_apellidos VARCHAR(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
+    IN p_correo VARCHAR(150) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
+    IN p_password VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
 )
 BEGIN
-    INSERT INTO sis_usuario (id_rol, nombres, apellidos, correo, password)
-    VALUES (p_id_rol, p_nombres, p_apellidos, p_correo, p_password);
+    -- p_id_empresa era `p_id_cliente` y estaba MUERTO: se recibía y se descartaba.
+    -- Ahora sí se graba, y es lo que separa a un usuario del estudio (NULL) de uno
+    -- del portal cliente (id de su empresa).
+    INSERT INTO sis_usuario (id_rol, id_empresa, nombres, apellidos, correo, password)
+    VALUES (p_id_rol, p_id_empresa, p_nombres, p_apellidos, p_correo, p_password);
     SELECT LAST_INSERT_ID() AS id_insertado;
 END ;;
 DELIMITER ;
@@ -469,11 +483,15 @@ DELIMITER ;
 /*!50003 SET @saved_sql_mode       = @@sql_mode */ ;
 /*!50003 SET sql_mode              = 'ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION' */ ;
 DELIMITER ;;
-CREATE PROCEDURE `sis_usuario_listar`(IN p_id_rol INT, IN p_estado VARCHAR(20))
+CREATE PROCEDURE `sis_usuario_listar`(IN p_id_rol INT, IN p_estado VARCHAR(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci)
 BEGIN
-    SELECT u.id_usuario, u.nombres, u.apellidos, u.correo, r.nombre AS rol, u.estado_registro
+    -- LEFT JOIN, no INNER: la mayoría de usuarios son del estudio y tienen
+    -- id_empresa NULL. Con INNER JOIN desaparecerían todos del listado.
+    SELECT u.id_usuario, u.nombres, u.apellidos, u.correo, r.nombre AS rol, u.estado_registro,
+           u.id_empresa, e.razon_social AS empresa, e.ruc AS empresa_ruc
     FROM sis_usuario u
     INNER JOIN sis_rol r ON u.id_rol = r.id_rol
+    LEFT JOIN empresa e ON e.id_empresa = u.id_empresa
     WHERE (p_id_rol IS NULL OR u.id_rol = p_id_rol)
       AND (p_estado IS NULL OR u.estado_registro = p_estado)
     ORDER BY u.apellidos ASC;
@@ -495,9 +513,11 @@ DELIMITER ;
 DELIMITER ;;
 CREATE PROCEDURE `sis_usuario_obtener`(IN p_id INT)
 BEGIN
-    SELECT u.id_usuario, u.nombres, u.apellidos, u.correo, u.id_rol, r.nombre AS rol, u.estado_registro
+    SELECT u.id_usuario, u.nombres, u.apellidos, u.correo, u.id_rol, r.nombre AS rol, u.estado_registro,
+           u.id_empresa, e.razon_social AS empresa, e.ruc AS empresa_ruc
     FROM sis_usuario u
     INNER JOIN sis_rol r ON u.id_rol = r.id_rol
+    LEFT JOIN empresa e ON e.id_empresa = u.id_empresa
     WHERE u.id_usuario = p_id AND u.estado_registro != 'ELIMINADO';
 END ;;
 DELIMITER ;
@@ -515,12 +535,20 @@ DELIMITER ;
 /*!50003 SET @saved_sql_mode       = @@sql_mode */ ;
 /*!50003 SET sql_mode              = 'ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION' */ ;
 DELIMITER ;;
-CREATE PROCEDURE `sis_usuario_obtener_por_correo`(IN p_credencial VARCHAR(150))
+CREATE PROCEDURE `sis_usuario_obtener_por_correo`(IN p_credencial VARCHAR(150) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci)
 BEGIN
+    -- `id_empresa` viaja hasta el JWT (AuthService.firmarAccessToken): es el scope
+    -- con el que el portal cliente acota TODAS sus consultas. Los dos estados de la
+    -- empresa se devuelven para que AuthService pueda rechazar el login de un cliente
+    -- cuya empresa ya no lleva el estudio, sin una segunda query.
     SELECT u.id_usuario, u.nombres, u.apellidos, u.correo, u.password,
-           u.id_rol, r.nombre AS rol, u.estado_registro
+           u.id_rol, r.nombre AS rol, u.estado_registro,
+           u.id_empresa, e.razon_social AS empresa,
+           e.estado_cliente AS empresa_estado_cliente,
+           e.estado_registro AS empresa_estado_registro
     FROM sis_usuario u
     INNER JOIN sis_rol r ON u.id_rol = r.id_rol
+    LEFT JOIN empresa e ON e.id_empresa = u.id_empresa
     WHERE u.correo = p_credencial AND u.estado_registro = 'ACTIVO';
 END ;;
 DELIMITER ;
@@ -683,6 +711,7 @@ CREATE TABLE `credito_fiscal_sire` (
 
 -- ---------- Stored procedures: empresa ----------
 
+DROP PROCEDURE IF EXISTS `empresa_crear`;
 DELIMITER ;;
 CREATE PROCEDURE `empresa_crear`(
     IN p_razon_social VARCHAR(200), IN p_ruc CHAR(11), IN p_regimen VARCHAR(20),
@@ -695,6 +724,7 @@ BEGIN
 END ;;
 DELIMITER ;
 
+DROP PROCEDURE IF EXISTS `empresa_listar`;
 DELIMITER ;;
 CREATE PROCEDURE `empresa_listar`(IN p_estado_cliente VARCHAR(20), IN p_search VARCHAR(200))
 BEGIN
@@ -712,6 +742,7 @@ BEGIN
 END ;;
 DELIMITER ;
 
+DROP PROCEDURE IF EXISTS `empresa_obtener`;
 DELIMITER ;;
 CREATE PROCEDURE `empresa_obtener`(IN p_id INT)
 BEGIN
@@ -722,6 +753,7 @@ BEGIN
 END ;;
 DELIMITER ;
 
+DROP PROCEDURE IF EXISTS `empresa_actualizar`;
 DELIMITER ;;
 CREATE PROCEDURE `empresa_actualizar`(
     IN p_id INT, IN p_razon_social VARCHAR(200), IN p_regimen VARCHAR(20),
@@ -738,6 +770,7 @@ BEGIN
 END ;;
 DELIMITER ;
 
+DROP PROCEDURE IF EXISTS `empresa_eliminar`;
 DELIMITER ;;
 CREATE PROCEDURE `empresa_eliminar`(IN p_id INT)
 BEGIN
@@ -745,6 +778,7 @@ BEGIN
 END ;;
 DELIMITER ;
 
+DROP PROCEDURE IF EXISTS `empresa_credenciales_guardar`;
 DELIMITER ;;
 CREATE PROCEDURE `empresa_credenciales_guardar`(
     IN p_id INT,
@@ -764,6 +798,7 @@ DELIMITER ;
 
 -- ---------- Stored procedures: cronograma_vencimiento ----------
 
+DROP PROCEDURE IF EXISTS `cronograma_upsert`;
 DELIMITER ;;
 CREATE PROCEDURE `cronograma_upsert`(
     IN p_anio SMALLINT, IN p_mes TINYINT, IN p_digito TINYINT,
@@ -776,6 +811,7 @@ BEGIN
 END ;;
 DELIMITER ;
 
+DROP PROCEDURE IF EXISTS `cronograma_listar`;
 DELIMITER ;;
 CREATE PROCEDURE `cronograma_listar`(IN p_anio SMALLINT, IN p_mes TINYINT)
 BEGIN
@@ -790,6 +826,7 @@ DELIMITER ;
 
 -- ---------- Stored procedures: declaracion (semáforo) ----------
 
+DROP PROCEDURE IF EXISTS `declaracion_listar_periodo`;
 DELIMITER ;;
 CREATE PROCEDURE `declaracion_listar_periodo`(IN p_periodo_anio SMALLINT, IN p_periodo_mes TINYINT)
 BEGIN
@@ -834,6 +871,7 @@ BEGIN
 END ;;
 DELIMITER ;
 
+DROP PROCEDURE IF EXISTS `declaracion_marcar_manual`;
 DELIMITER ;;
 CREATE PROCEDURE `declaracion_marcar_manual`(
     IN p_id_empresa INT, IN p_periodo_anio SMALLINT, IN p_periodo_mes TINYINT,
@@ -857,6 +895,7 @@ BEGIN
 END ;;
 DELIMITER ;
 
+DROP PROCEDURE IF EXISTS `declaracion_marcar_automatico`;
 DELIMITER ;;
 CREATE PROCEDURE `declaracion_marcar_automatico`(
     IN p_id_empresa INT, IN p_periodo_anio SMALLINT, IN p_periodo_mes TINYINT,
@@ -899,6 +938,7 @@ BEGIN
 END ;;
 DELIMITER ;
 
+DROP PROCEDURE IF EXISTS `declaracion_marcar_error`;
 DELIMITER ;;
 CREATE PROCEDURE `declaracion_marcar_error`(
     IN p_id_empresa INT, IN p_periodo_anio SMALLINT, IN p_periodo_mes TINYINT,
@@ -928,6 +968,7 @@ DELIMITER ;
 
 -- ---------- Stored procedures: credito_fiscal_sire (Fase 2, vía API oficial) ----------
 
+DROP PROCEDURE IF EXISTS `credito_fiscal_sire_registrar`;
 DELIMITER ;;
 CREATE PROCEDURE `credito_fiscal_sire_registrar`(
     IN p_id_empresa INT, IN p_periodo_anio SMALLINT, IN p_periodo_mes TINYINT,
@@ -942,6 +983,7 @@ BEGIN
 END ;;
 DELIMITER ;
 
+DROP PROCEDURE IF EXISTS `credito_fiscal_sire_por_empresa`;
 DELIMITER ;;
 CREATE PROCEDURE `credito_fiscal_sire_por_empresa`(IN p_id_empresa INT)
 BEGIN
@@ -954,6 +996,7 @@ DELIMITER ;
 
 -- ---------- Stored procedures: saldo_favor y corte_preliminar ----------
 
+DROP PROCEDURE IF EXISTS `saldo_favor_registrar`;
 DELIMITER ;;
 CREATE PROCEDURE `saldo_favor_registrar`(
     IN p_id_empresa INT, IN p_periodo_anio SMALLINT, IN p_periodo_mes TINYINT,
@@ -966,6 +1009,7 @@ BEGIN
 END ;;
 DELIMITER ;
 
+DROP PROCEDURE IF EXISTS `saldo_favor_por_empresa`;
 DELIMITER ;;
 CREATE PROCEDURE `saldo_favor_por_empresa`(IN p_id_empresa INT)
 BEGIN
@@ -976,6 +1020,7 @@ BEGIN
 END ;;
 DELIMITER ;
 
+DROP PROCEDURE IF EXISTS `corte_preliminar_registrar`;
 DELIMITER ;;
 CREATE PROCEDURE `corte_preliminar_registrar`(
     IN p_id_empresa INT, IN p_periodo_anio SMALLINT, IN p_periodo_mes TINYINT,
@@ -3697,15 +3742,111 @@ WHERE id_modulo = @id_modulo_planilla
 
 -- ------------------------------------------------------------------------------
 -- Guía de navegación: T-REGISTRO (padrón de trabajadores)
+-- ==============================================================================
+--  CATÁLOGO DE ERRORES CONOCIDOS DE SUNAT
+-- ==============================================================================
+-- El código la consultaba desde el 27/08/2026 (trabajadores.service.ts,
+-- anotarErroresConocidos) pero la tabla no existía: cada corrida del T-Registro
+-- terminaba con "Table 'sunat_error_conocido' doesn't exist" al pie del
+-- diagnóstico. La consulta está dentro de un try, así que nunca rompió nada —
+-- solo ensuciaba.
+--
+-- PARA QUÉ SIRVE: el diagnóstico del scraping es largo y quien lo lee no siempre
+-- distingue "SUNAT está caído" de "nos equivocamos de selector". Este catálogo
+-- traduce: cuando un patrón coincide, se agrega una línea que dice de quién es el
+-- problema, por qué pasa y si reintentar sirve — porque cada reintento gasta una
+-- sesión y el WAF tolera ~8 por día.
+--
+-- Los patrones se guardan SIN TILDES a propósito: la comparación normaliza los dos
+-- lados, y el portal escribe los acentos de forma inconsistente.
+CREATE TABLE IF NOT EXISTS `sunat_error_conocido` (
+  `id_error` int NOT NULL AUTO_INCREMENT COMMENT 'Llave primaria',
+  `codigo` varchar(30) NOT NULL COMMENT 'Código corto para nombrarlo al hablar (ej: WAF_CORTE)',
+  `patron` varchar(400) NOT NULL COMMENT 'Expresion regular que se busca en el diagnostico. SIN TILDES.',
+  `titulo` varchar(200) NOT NULL COMMENT 'Qué pasó, en una línea',
+  `origen` enum('SUNAT','NUESTRO','USUARIO','RED') NOT NULL DEFAULT 'SUNAT' COMMENT 'De quién es el problema',
+  `causa` text NOT NULL COMMENT 'Por qué ocurre',
+  `que_hacer` text NOT NULL COMMENT 'Qué hacer al respecto',
+  `reintentar_sirve` tinyint(1) NOT NULL DEFAULT '0' COMMENT '0 = reintentar gasta una sesión del WAF para nada',
+  `veces_visto` int NOT NULL DEFAULT '0' COMMENT 'Cuántas veces coincidió: separa lo que falla seguido de la anécdota de un día',
+  `ultima_vez` datetime DEFAULT NULL COMMENT 'Última coincidencia',
+  `estado_registro` enum('ACTIVO','ELIMINADO') NOT NULL DEFAULT 'ACTIVO',
+  PRIMARY KEY (`id_error`),
+  UNIQUE KEY `uk_codigo_error` (`codigo`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='MÓDULO: Vencimientos/Planilla. Traduce los fallos del scraping de SUNAT.';
+
+INSERT INTO `sunat_error_conocido` (`codigo`, `patron`, `titulo`, `origen`, `causa`, `que_hacer`, `reintentar_sirve`) VALUES
+('WAF_CORTE',
+ 'net::ERR_|frame was detached|Timeout .*exceeded.*(sol\.html|sunat)',
+ 'SUNAT cortó la conexión a mitad de camino',
+ 'SUNAT',
+ 'El WAF de SUNAT empieza a cortar conexiones tras unas 8 sesiones seguidas en poco tiempo. Se manifiesta como timeouts en clics que antes funcionaban.',
+ 'Parar por hoy y retomar mañana. Insistir arriesga que le restrinjan el acceso a la cuenta real del cliente, que es peor que cargar el padron a mano.',
+ 0),
+
+('LOGIN_REBOTE',
+ 'Aterrizaje del login: https://api-seguridad',
+ 'SUNAT devolvió al formulario de login en vez de al menu',
+ 'SUNAT',
+ 'La cadena de redirects termino de vuelta en api-seguridad. La pagina carga con HTTP 200, asi que sin este aviso el scraper seguiria haciendo clics a ciegas sobre un formulario de credenciales.',
+ 'Verificar que el Usuario y la Clave SOL de la empresa sigan vigentes. Si son correctos, suele ser SUNAT: esperar y reintentar mas tarde.',
+ 1),
+
+('PUERTA_EQUIVOCADA',
+ 'MenuInternetPlataforma|exe=55',
+ 'Se entro por "Mis Declaraciones y Pagos" y ahi no existe el T-Registro',
+ 'NUESTRO',
+ 'sol.html tiene varias puertas y cada una deja la sesion en una aplicacion distinta. Por esa, el menu lateral solo muestra el arbol de declaraciones y las opciones del T-Registro no existen en el DOM.',
+ 'Revisar LINK_TRAMITES_CONSULTAS en sunat-tregistro-scraping.client.ts: tiene que entrar por "Mis tramites y consultas". No se puede saltar de una app a la otra despues.',
+ 0),
+
+('NO_VOLVIO_PADRON',
+ 'NO VOLVIO al padron',
+ 'Se quedo dentro de una ficha y no pudo volver al listado',
+ 'NUESTRO',
+ 'La ficha se abre por POST dentro del iframe del T-Registro. Si falla la vuelta, las fichas siguientes no se pueden abrir y el resto del padron queda sin sueldo.',
+ 'Mirar la traza de esa ficha: dice si volvio por "Retornar", recargando el iframe o rehaciendo el menu. La via confiable es recargar el iframe con su propia URL (ver volverAlPadron).',
+ 1),
+
+('FICHA_A_MEDIO_CARGAR',
+ 'NO abrio la pestana|sin la ficha poblada',
+ 'La ficha no termino de cargar y se leyo vacia',
+ 'SUNAT',
+ 'El T-Registro arma la ficha por partes: primero el formulario, despues los datos, y la identificacion antes que el bloque laboral. Leer en el medio devuelve campos vacios sin dar error.',
+ 'Suele resolverse solo al reintentar, porque el scraper ahora espera a que aparezca la fecha del periodo laboral. Si se repite en el mismo trabajador, subir la espera de esperarDatosLaborales.',
+ 1),
+
+('PETICION_CORTADA',
+ 'La peticion se corto por tiempo',
+ 'La peticion supero el techo de tiempo del servidor',
+ 'NUESTRO',
+ 'El T-Registro no trae el sueldo en el listado: hay que abrir la ficha de cada trabajador, asi que el tiempo crece con la planilla.',
+ 'Revisar RUTAS_LARGAS en timeout.interceptor.ts. Hoy /consultar-tregistro esta en 10 minutos; una planilla muy grande puede pasarlo.',
+ 0),
+
+('SIN_CLAVE_SOL',
+ 'no tiene Usuario/Clave SOL',
+ 'La empresa no tiene credenciales SOL guardadas',
+ 'USUARIO',
+ 'El scraping necesita entrar a SUNAT con la Clave SOL del cliente y esa empresa no la tiene cargada.',
+ 'Cargarlas en Catalogo -> Empresas, en la ficha de la empresa.',
+ 0)
+ON DUPLICATE KEY UPDATE
+  patron = VALUES(patron), titulo = VALUES(titulo), origen = VALUES(origen),
+  causa = VALUES(causa), que_hacer = VALUES(que_hacer), reintentar_sirve = VALUES(reintentar_sirve);
+
+
 -- ------------------------------------------------------------------------------
 -- Esta guía es la ESPECIFICACIÓN del scraper: los pasos de acá y los selectores de
 -- planilla/trabajadores/sunat-tregistro-scraping.client.ts describen el mismo
 -- recorrido. Si SUNAT cambia un texto de menú, hay que corregir LOS DOS.
 --
--- Estado al 27/08/2026: login y ruta del menú confirmados en vivo. Lo que sigue en
--- prueba es cómo salir del módulo de declaraciones hacia el menú raíz: la
--- navegación directa por URL no sirve (SUNAT vuelve a pedir login), va por el link
--- "Ir al inicio". El detalle está dentro del propio texto de la guía.
+-- Estado al 01/09/2026: RECORRIDO COMPLETO VERIFICADO DE PUNTA A PUNTA. Corrida
+-- real contra el RUC 20530093019: 11 trabajadores, 11 sueldos leídos. Login, menú,
+-- padrón, ficha de cada persona, pestaña "Trabajador", "Monto de remuneración
+-- básica inicial" y la vuelta al padrón entre ficha y ficha. Todo lo de abajo está
+-- comprobado en pantalla, no supuesto.
 INSERT INTO guias_sunat (codigo, nombre, pasos, estado, id_usuario_crea)
 SELECT 'TREG', 'T-Registro — Padrón de Trabajadores', '', 'ACTIVO', 1
 ON DUPLICATE KEY UPDATE codigo = codigo;
@@ -3723,9 +3864,67 @@ UPDATE guias_sunat SET nombre = 'T-Registro — Padrón de Trabajadores', pasos 
 9. Registro de Trabaj., Pension., Pers. en forma...
 10. Registro individual
 11. Sale la pantalla "Registro de Trabajadores, Pensionistas y Otros" con la tabla
-    del padron. Columnas: Categoria (TRA) | Documento de Identidad | Apellidos y
-    Nombres | Fecha. Abajo dice "1 - N de N elementos".
-12. Con el resultado, volver al sistema: Planilla -> Trabajadores -> TRAER DEL
+    del padron ya listada, sin buscar nada. Columnas (verificadas 01/09/2026):
+      Categoria | Documento de Identidad | Apellidos y Nombres | Fec. Nac. |
+      Sexo | Estado | Modificar | Eliminar
+    Abajo dice "1 - N de N elementos".
+
+    ⚠️ LAS DOS ULTIMAS COLUMNAS SON ICONOS SIN TEXTO Y LA ULTIMA BORRA. El lapiz de
+    "Modificar" abre la ficha; la X roja de "Eliminar" da de baja al trabajador en
+    el T-Registro del cliente. A ojo se distinguen; para el scraper no: por eso
+    abre la ficha SOLO por el enlace que llama a irModificar() y, si no lo
+    encuentra, se detiene en vez de probar el resto de la fila.
+
+12. Clic en el lapiz de "Modificar" de una fila. Abre la ficha de esa persona, que
+    arranca en "Datos de Identificacion" (nacionalidad, telefono, correo, estado
+    civil, direccion).
+
+13. En la seccion "Categoria" hay cuatro pestañas:
+      Resumen de Prestadores | Trabajador | Pensionista | Personal en formacion laboral
+    Abre en "Resumen de Prestadores", QUE NO TRAE NINGUN MONTO. Hay que entrar a
+    la pestaña "Trabajador".
+
+14. Dentro de "Trabajador", en el bloque "Datos laborales", esta el sueldo:
+      "Monto de remuneracion basica inicial:"  ->  p. ej. 2000
+    Es un campo de formulario, no texto suelto: hay que leer su VALOR. Y viene sin
+    decimales, asi que un patron que exija ",00" no lo encuentra.
+    En ese mismo bloque estan: Periodo laboral (Fecha de Inicio = fecha de ingreso),
+    Tipo de trabajador, Regimen laboral, Categoria ocupacional, Ocupacion y Tipo de
+    contrato. OJO con el orden: los rotulos de las tres columnas de fechas van
+    TODOS JUNTOS antes de los campos, asi que "lo que sigue a Fecha de Inicio" no
+    es una fecha sino el rotulo de al lado.
+
+15. El regimen pensionario y el CUSPP NO estan ahi: viven en "Datos de Seguridad
+    Social", una seccion PLEGADA mas abajo (junto con "Datos de la Situacion
+    Educativa" y "Datos Tributarios"). Hay que desplegarla.
+
+16. Salir de la ficha con "Retornar". NUNCA con "Salir": eso cierra la sesion de
+    SUNAT entera y obliga a loguearse de nuevo (y el WAF cuenta cada login).
+
+    A MANO, "Retornar" alcanza. EL SCRAPER NO LO USA como primera opcion, y esto es
+    lo que mas costo del modulo entero: despues de la primera ficha no habia forma
+    confiable de volver al padron. "Retornar" no respondia al clic automatico;
+    retroceder en el historial movia la pagina del MENU de SOL y no la app, porque
+    la ficha se abre por POST DENTRO del iframe; y volver a entrar por el menu daba
+    "OK" dejando el iframe mostrando la misma ficha. Resultado: se leia UN sueldo de
+    once y el resto salia vacio, sin ningun error.
+
+    Lo que si funciona: RECARGAR EL IFRAME CON SU PROPIA URL, la de
+    ol-ti-itrtpspresta/prestadores.htm?hc&token=..., que es donde se encontro el
+    padron la primera vez. Es una navegacion de solo lectura y no depende de
+    acertarle a ningun boton. Once de once.
+
+17. OJO CON LOS TIEMPOS. La ficha se abre por POST dentro del iframe y tarda: si se
+    lee apenas cae el clic, sale el formulario VACIO y el trabajador queda sin
+    sueldo sin dar error. Por eso el scraper confirma que aparecio "Datos laborales"
+    antes de leer, y reintenta. En la corrida buena, 2 de los 11 necesitaron ese
+    reintento.
+
+    Y hay que abrir UNA FICHA POR TRABAJADOR: el tiempo crece con la planilla. Once
+    fichas son un par de minutos. El techo de la peticion esta en 10 minutos
+    (RUTAS_LARGAS en timeout.interceptor.ts); una planilla muy grande puede pasarlo.
+
+18. Con el resultado, volver al sistema: Planilla -> Trabajadores -> TRAER DEL
     T-REGISTRO (automatico), o IMPORTAR DE EXCEL si se prefiere a mano.
 
 ═══ EL PASO 2 ES EL QUE DECIDE TODO ═══
@@ -3765,12 +3964,16 @@ entender por que no encuentra el menu.
 - "Categoria" = TRA es trabajador. Pensionistas, prestadores de servicios y personal
   en formacion tienen otro codigo y no van al padron de planilla.
 - La remuneracion basica SI esta en el T-Registro (Estructura 5, campo 16 del anexo
-  de estructuras). Puede que no se vea en el listado y haya que abrir el detalle de
-  cada trabajador.
+  de estructuras), pero NO en este listado: hay que abrir la ficha de cada
+  trabajador, una por una (pasos 12 a 14). Con 11 trabajadores son 11 idas y
+  vueltas dentro de la MISMA sesion — eso no gasta logins, pero si tiempo.
+- Y es la remuneracion INICIAL, la del ingreso: los aumentos posteriores no estan
+  en el T-Registro, viven en el PLAME declaracion por declaracion. Para el sueldo
+  de HOY, el Excel del estudio es mejor fuente que esta pantalla.
 
 ═══ ESTA GUIA ES LA ESPECIFICACION DEL SCRAPER ═══
 
-Los pasos 2 y 6 a 11 estan replicados en el bloque SELECTORES de
+Los pasos 2 y 6 a 16 estan replicados en el bloque SELECTORES de
   planilla/trabajadores/sunat-tregistro-scraping.client.ts
 Si SUNAT cambia un texto de menu, hay que corregir LOS DOS lugares. El endpoint de
 scraping devuelve un "diagnostico" que lista lo que vio en pantalla (y el HTML real
@@ -4129,6 +4332,134 @@ SELECT 1, id_accion, 'ACTIVO' FROM sis_accion WHERE id_modulo = @id_modulo_tesor
 ON DUPLICATE KEY UPDATE `estado_registro` = 'ACTIVO';
 
 -- ==============================================================================
+-- 8. MÓDULO PLANILLAS CLIENTE — el portal que ve la empresa cliente
+-- ==============================================================================
+-- Hasta acá TODO el sistema es para la gente del estudio: entra, elige la empresa
+-- que quiere y ve lo que sea. El portal cliente invierte eso: el dueño o el área de
+-- RR.HH. de UNA empresa entra a ver SU personal y SUS planillas, y nada más.
+--
+-- Cómo se sostiene el aislamiento (y por qué no alcanza con permisos):
+--   `sis_usuario.id_empresa` (arriba, sección 0) marca a qué empresa pertenece el
+--   usuario. Viaja en el JWT y el backend lo mete en el WHERE de cada consulta del
+--   área `erp/cliente/`. Los permisos dicen QUÉ pantallas ve; `id_empresa` dice
+--   SOBRE QUÉ FILAS. Sin la segunda mitad, un cliente con el permiso correcto pide
+--   `/cliente/planillas/93` y lee la planilla de otra empresa (IDOR).
+--
+-- El portal es SOLO LECTURA. No hay un solo INSERT/UPDATE/DELETE del lado cliente:
+-- quien carga contratos y calcula planillas es el estudio, desde la intranet.
+--
+-- Qué se descarga:
+--   · Boleta de pago (PDF) — se GENERA al vuelo desde `planilla_detalle_concepto`,
+--     no se guarda ningún archivo. La boleta ya es reproducible: el detalle guarda
+--     el snapshot completo del cálculo. Guardar además el PDF sería una segunda
+--     copia que puede quedar desincronizada del dato.
+--   · Contrato (PDF) — ese SÍ es un archivo subido: es el papel firmado, no hay
+--     forma de generarlo desde la base.
+
+-- ------------------------------------------------------------------------------
+-- planilla_contrato — el papel firmado de cada trabajador
+-- ------------------------------------------------------------------------------
+-- El T-Registro ya dice el TIPO de contrato (`planilla_trabajador.cod_tipo_contrato`,
+-- Tabla 12 de SUNAT) y sus fechas. Esta tabla es otra cosa: el DOCUMENTO. Un
+-- trabajador con contrato indeterminado puede tener además dos adendas y un convenio
+-- de modalidad formativa, y los tres son PDFs distintos que el cliente necesita bajar.
+--
+-- El PDF va a `storage-privado/contratos`, NUNCA a `uploads/`: main.ts publica
+-- `uploads/` como estático SIN login, y un contrato laboral lleva sueldo y DNI.
+-- Se sirve por endpoint con guard, igual que las constancias de declaración.
+CREATE TABLE `planilla_contrato` (
+  `id_contrato` int NOT NULL AUTO_INCREMENT,
+  `id_trabajador` int NOT NULL,
+  `id_empresa` int NOT NULL COMMENT 'Redundante con planilla_trabajador.id_empresa, a propósito: el portal cliente filtra por esta columna sin un JOIN extra en cada consulta, y el índice (id_empresa, estado_registro) hace el listado directo',
+
+  `tipo` enum('CONTRATO','ADENDA','CONVENIO','LIQUIDACION','OTRO') NOT NULL DEFAULT 'CONTRATO'
+    COMMENT 'Qué documento es. ADENDA = prórroga o modificación de uno anterior',
+  `numero` varchar(50) DEFAULT NULL COMMENT 'Numeración interna del estudio o de la empresa, si la usan',
+  `descripcion` varchar(255) DEFAULT NULL COMMENT 'Qué es, en una línea, para que el cliente lo distinga en la lista',
+  `fecha_inicio` date NOT NULL,
+  `fecha_fin` date DEFAULT NULL COMMENT 'NULL = plazo indeterminado. No se deriva de fecha_cese: el cese es un hecho posterior y el contrato pudo vencer antes',
+
+  `archivo_ruta` varchar(255) NOT NULL COMMENT 'Ruta RELATIVA (/contratos/<archivo>.pdf). Nunca absoluta: el path del hosting no es el de local',
+  `archivo_nombre` varchar(255) NOT NULL COMMENT 'Nombre original del PDF — es el que se le devuelve al cliente al descargar, no el nombre aleatorio de disco',
+  `archivo_tamano` int NOT NULL DEFAULT 0 COMMENT 'Bytes. Se muestra en la lista para que nadie espere una descarga de 8 MB sin saberlo',
+
+  `visible_cliente` tinyint(1) NOT NULL DEFAULT 1
+    COMMENT 'Si 0, el estudio lo tiene cargado pero el portal cliente no lo lista ni lo deja bajar. Para el borrador que todavía no está firmado',
+
+  `observaciones` text DEFAULT NULL COMMENT 'Notas internas del estudio. NO se expone en el portal cliente',
+  `estado_registro` enum('ACTIVO','ELIMINADO') NOT NULL DEFAULT 'ACTIVO',
+  `id_usuario_crea` int NOT NULL,
+  `id_usuario_mod` int DEFAULT NULL,
+  PRIMARY KEY (`id_contrato`),
+  KEY `ix_planilla_contrato_empresa` (`id_empresa`,`estado_registro`,`visible_cliente`),
+  KEY `ix_planilla_contrato_trabajador` (`id_trabajador`,`estado_registro`),
+  KEY `fk_planilla_contrato_usuario` (`id_usuario_crea`),
+  CONSTRAINT `fk_planilla_contrato_trabajador` FOREIGN KEY (`id_trabajador`) REFERENCES `planilla_trabajador` (`id_trabajador`) ON DELETE CASCADE,
+  CONSTRAINT `fk_planilla_contrato_empresa` FOREIGN KEY (`id_empresa`) REFERENCES `empresa` (`id_empresa`) ON DELETE CASCADE,
+  CONSTRAINT `fk_planilla_contrato_usuario` FOREIGN KEY (`id_usuario_crea`) REFERENCES `sis_usuario` (`id_usuario`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='MÓDULO: Planilla. Contratos y adendas escaneados de cada trabajador. El PDF vive en storage-privado/contratos.';
+
+-- ------------------------------------------------------------------------------
+-- Permisos del ESTUDIO sobre contratos (módulo PLANILLA, pantalla de la intranet)
+-- ------------------------------------------------------------------------------
+SET @id_modulo_planilla = (SELECT id_modulo FROM sis_modulo WHERE nombre = 'PLANILLA');
+
+INSERT INTO `sis_accion` (`id_modulo`, `codigo_accion`, `descripcion`, `tipo_operacion`, `estado_registro`) VALUES
+(@id_modulo_planilla, 'ver_contrato',      'Ver los contratos cargados de los trabajadores',        'READ',   'ACTIVO'),
+(@id_modulo_planilla, 'crear_contrato',    'Subir el PDF de un contrato o adenda',                  'CREATE', 'ACTIVO'),
+(@id_modulo_planilla, 'editar_contrato',   'Editar los datos de un contrato ya cargado',            'UPDATE', 'ACTIVO'),
+(@id_modulo_planilla, 'eliminar_contrato', 'Dar de baja un contrato cargado',                       'DELETE', 'ACTIVO')
+ON DUPLICATE KEY UPDATE `descripcion` = VALUES(`descripcion`);
+
+INSERT INTO `sis_permiso` (`id_rol`, `id_accion`, `estado_registro`)
+SELECT 1, id_accion, 'ACTIVO' FROM sis_accion
+WHERE id_modulo = @id_modulo_planilla
+  AND codigo_accion IN ('ver_contrato','crear_contrato','editar_contrato','eliminar_contrato')
+ON DUPLICATE KEY UPDATE `estado_registro` = 'ACTIVO';
+
+-- ------------------------------------------------------------------------------
+-- Módulo PLANILLAS_CLIENTE — lo que ve la empresa desde el portal
+-- ------------------------------------------------------------------------------
+-- Módulo APARTE de PLANILLA a propósito. Si el portal reusara `ver_planilla`, dar
+-- acceso al cliente le abriría de paso calcular, cerrar y anular: son acciones del
+-- mismo módulo y basta con que alguien marque el permiso equivocado en la pantalla
+-- de roles. Con un módulo propio, el peor error posible es que el cliente vea de más
+-- DENTRO de su propia empresa — nunca que toque un cálculo.
+INSERT INTO `sis_modulo` (`nombre`, `etiqueta`, `estado_registro`) VALUES
+('PLANILLAS_CLIENTE', 'Planillas Cliente', 'ACTIVO')
+ON DUPLICATE KEY UPDATE `etiqueta` = VALUES(`etiqueta`), `estado_registro` = 'ACTIVO';
+
+SET @id_modulo_planillas_cliente = (SELECT id_modulo FROM sis_modulo WHERE nombre = 'PLANILLAS_CLIENTE');
+
+-- Todas READ o SPECIAL: el portal no escribe nada. Las descargas van como SPECIAL
+-- siguiendo la convención del proyecto para lo que no es un CRUD (exportar/generar).
+INSERT INTO `sis_accion` (`id_modulo`, `codigo_accion`, `descripcion`, `tipo_operacion`, `estado_registro`) VALUES
+(@id_modulo_planillas_cliente, 'ver_personal_cliente',        'Ver el personal de su propia empresa',                        'READ',    'ACTIVO'),
+(@id_modulo_planillas_cliente, 'descargar_contrato_cliente',  'Descargar el PDF del contrato de un trabajador de su empresa','SPECIAL', 'ACTIVO'),
+(@id_modulo_planillas_cliente, 'ver_planilla_cliente',        'Ver las planillas cerradas de su propia empresa',             'READ',    'ACTIVO'),
+(@id_modulo_planillas_cliente, 'descargar_boleta_cliente',    'Descargar la boleta de pago en PDF',                          'SPECIAL', 'ACTIVO')
+ON DUPLICATE KEY UPDATE `descripcion` = VALUES(`descripcion`);
+
+INSERT INTO `sis_permiso` (`id_rol`, `id_accion`, `estado_registro`)
+SELECT 1, id_accion, 'ACTIVO' FROM sis_accion WHERE id_modulo = @id_modulo_planillas_cliente
+ON DUPLICATE KEY UPDATE `estado_registro` = 'ACTIVO';
+
+-- ------------------------------------------------------------------------------
+-- Rol CLIENTE
+-- ------------------------------------------------------------------------------
+-- Lleva EXACTAMENTE las cuatro acciones de PLANILLAS_CLIENTE y ninguna más. Un
+-- usuario con este rol y sin `id_empresa` no puede hacer nada: el backend responde
+-- 403 antes de consultar (ver `resolverEmpresa()` en los services de erp/cliente/).
+INSERT INTO `sis_rol` (`nombre`, `descripcion`, `estado_registro`) VALUES
+('CLIENTE', 'Empresa cliente del estudio. Entra al portal a ver su personal y descargar boletas y contratos. Solo lectura y solo sobre su propia empresa (sis_usuario.id_empresa).', 'ACTIVO')
+ON DUPLICATE KEY UPDATE `descripcion` = VALUES(`descripcion`), `estado_registro` = 'ACTIVO';
+
+INSERT INTO `sis_permiso` (`id_rol`, `id_accion`, `estado_registro`)
+SELECT (SELECT id_rol FROM sis_rol WHERE nombre = 'CLIENTE'), id_accion, 'ACTIVO'
+FROM sis_accion WHERE id_modulo = @id_modulo_planillas_cliente
+ON DUPLICATE KEY UPDATE `estado_registro` = 'ACTIVO';
+
+-- ==============================================================================
 -- MIGRACIONES SOBRE BASES YA EXISTENTES
 -- ==============================================================================
 -- Los CREATE TABLE de arriba son el esquema de referencia para una base NUEVA.
@@ -4169,6 +4500,31 @@ ON DUPLICATE KEY UPDATE `estado_registro` = 'ACTIVO';
 -- 
 -- ALTER TABLE `auth_refresh_tokens`
 --   ADD INDEX IF NOT EXISTS `idx_refresh_reemplazado` (`reemplazado_por`);
+
+-- 2026-09-01 · sis_usuario.id_empresa — scope del portal cliente (sección 8)
+--
+-- Sin esta columna el login del portal rompe con "Unknown column 'u.id_empresa'":
+-- el SP `sis_usuario_obtener_por_correo` ya la selecciona, y AuthService la firma
+-- dentro del JWT.
+--
+-- Va COMENTADA por la misma razón que las de arriba: la columna ya está en el
+-- CREATE TABLE de la sección 0, así que sobre una base nueva este ALTER fallaría
+-- con "Duplicate column name" y cortaría la carga entera de bd.sql. Descomentar
+-- SOLO para aplicarla a mano sobre una base que ya está corriendo.
+--
+-- Orden de aplicación sobre una base existente (los tres pasos, en este orden):
+--   1. Este ALTER.
+--   2. Los 5 stored procedures de `sis_usuario` de la sección 0 (cambiaron su firma:
+--      `sis_usuario_crear` y `sis_usuario_actualizar` ahora reciben p_id_empresa).
+--   3. El bloque completo de la sección 8 (tabla + módulo + acciones + rol CLIENTE).
+--
+-- ALTER TABLE `sis_usuario`
+--   ADD COLUMN `id_empresa` int DEFAULT NULL
+--     COMMENT 'Empresa cliente a la que pertenece el usuario. NULL = usuario del estudio'
+--     AFTER `id_rol`,
+--   ADD KEY `fk_sis_usuario_empresa` (`id_empresa`),
+--   ADD CONSTRAINT `fk_sis_usuario_empresa` FOREIGN KEY (`id_empresa`)
+--     REFERENCES `empresa` (`id_empresa`) ON DELETE RESTRICT;
 
 -- ==============================================================================
 
