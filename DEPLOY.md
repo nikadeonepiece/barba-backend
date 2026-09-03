@@ -8,8 +8,10 @@ cPanel hacen falta.
 > contiene no es un repo, así que un documento en la raíz no se versionaría y no
 > llegaría a otra PC.
 >
-> `erp-web` (el sitio público) **todavía no tiene deploy**: falta confirmar su
-> dominio. Ver el final de este archivo.
+> El **sitio público** no tiene deploy propio: vive dentro de `erp-frontend`
+> (`src/app/web/`, rutas `/`, `/servicios`, `/nosotros`, `/contacto`) y sale en
+> el mismo build. Existió un Angular aparte, `erp-web`, que se eliminó el
+> 03/09/2026 tras migrar todo a `erp-frontend`.
 
 ---
 
@@ -282,13 +284,8 @@ SIRE. `npm install` sí funciona: el paquete instala, lo que falta es el navegad
 
 ---
 
-## `erp-web` (sitio público) — pendiente
+## Sitio público
 
-`erp-web` es un Angular aparte, **100% prerenderizado** (`RenderMode.Prerender`
-para `**` en `app.routes.server.ts`): el build produce `dist/erp-web/browser/`
-con un `index.html` por página. Es estático puro — **no necesita app Node**, se
-sirve como archivos en cualquier dominio Apache.
-
-Falta decidir en qué dominio va. Cuando esté decidido, su deploy es una copia de
-`erp-frontend/tools/deploy.mjs` cambiando `PROYECTO_ESPERADO`, `HOST`, `REMOTO`,
-`DIST` (`dist/erp-web/browser`) y `EXCLUIR`, y agregándole un `.htaccess` propio.
+No tiene deploy propio: vive dentro de `erp-frontend` (`src/app/web/`) y se sube
+con `npm run deploy` de ese proyecto, como cualquier otra ruta. Las páginas son
+`/`, `/servicios`, `/nosotros` y `/contacto`, declaradas en `app.routes.ts`.

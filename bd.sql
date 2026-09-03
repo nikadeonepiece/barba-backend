@@ -557,6 +557,70 @@ DELIMITER ;
 /*!50003 SET character_set_results = @saved_cs_results */ ;
 /*!50003 SET collation_connection  = @saved_col_connection */ ;
 
+/*!50003 DROP PROCEDURE IF EXISTS `sis_usuario_listar_por_empresa` */;
+/*!50003 SET @saved_cs_client      = @@character_set_client */ ;
+/*!50003 SET @saved_cs_results     = @@character_set_results */ ;
+/*!50003 SET @saved_col_connection = @@collation_connection */ ;
+/*!50003 SET character_set_client  = utf8mb4 */ ;
+/*!50003 SET character_set_results = utf8mb4 */ ;
+/*!50003 SET collation_connection  = utf8mb4_unicode_ci */ ;
+/*!50003 SET @saved_sql_mode       = @@sql_mode */ ;
+/*!50003 SET sql_mode              = 'ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION' */ ;
+DELIMITER ;;
+CREATE PROCEDURE `sis_usuario_listar_por_empresa`(IN p_id_empresa INT)
+BEGIN
+    -- Cuentas del PORTAL CLIENTE de UNA empresa. Alimenta el modal "Usuarios del portal"
+    -- de catalogos/empresas.
+    --
+    -- `p_id_empresa` es obligatorio y entra en el WHERE sin `OR p_id_empresa IS NULL`:
+    -- un NULL acá devolvería TODAS las cuentas del estudio (las que tienen id_empresa
+    -- nulo) dentro de una pantalla que dice ser de una empresa puntual.
+    --
+    -- Incluye las BLOQUEADAS (solo excluye 'ELIMINADO'): la pantalla necesita poder
+    -- desbloquear una cuenta suspendida, y si no se lista no hay forma de llegar a ella.
+    SELECT u.id_usuario, u.id_rol, r.nombre AS rol, u.nombres, u.apellidos, u.correo,
+           u.estado_registro, u.primera_sesion, u.fecha_registro
+    FROM sis_usuario u
+    INNER JOIN sis_rol r ON u.id_rol = r.id_rol
+    WHERE u.id_empresa = p_id_empresa AND u.estado_registro <> 'ELIMINADO'
+    ORDER BY u.apellidos ASC, u.nombres ASC;
+END ;;
+DELIMITER ;
+/*!50003 SET sql_mode              = @saved_sql_mode */ ;
+/*!50003 SET character_set_client  = @saved_cs_client */ ;
+/*!50003 SET character_set_results = @saved_cs_results */ ;
+/*!50003 SET collation_connection  = @saved_col_connection */ ;
+
+/*!50003 DROP PROCEDURE IF EXISTS `sis_usuario_cambiar_estado` */;
+/*!50003 SET @saved_cs_client      = @@character_set_client */ ;
+/*!50003 SET @saved_cs_results     = @@character_set_results */ ;
+/*!50003 SET @saved_col_connection = @@collation_connection */ ;
+/*!50003 SET character_set_client  = utf8mb4 */ ;
+/*!50003 SET character_set_results = utf8mb4 */ ;
+/*!50003 SET collation_connection  = utf8mb4_unicode_ci */ ;
+/*!50003 SET @saved_sql_mode       = @@sql_mode */ ;
+/*!50003 SET sql_mode              = 'ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION' */ ;
+DELIMITER ;;
+CREATE PROCEDURE `sis_usuario_cambiar_estado`(
+    IN p_id INT,
+    IN p_estado VARCHAR(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+)
+BEGIN
+    -- Suspender/reactivar el acceso sin borrar la cuenta. Es distinto de
+    -- `sis_usuario_eliminar`: eso es baja definitiva ('ELIMINADO') y el usuario
+    -- desaparece de todo listado; esto es un candado reversible.
+    --
+    -- `AND estado_registro <> 'ELIMINADO'` a propósito: reactivar una cuenta ya dada
+    -- de baja por esta vía la revivirá sin pasar por la pantalla que corresponde.
+    UPDATE sis_usuario SET estado_registro = p_estado
+    WHERE id_usuario = p_id AND estado_registro <> 'ELIMINADO';
+END ;;
+DELIMITER ;
+/*!50003 SET sql_mode              = @saved_sql_mode */ ;
+/*!50003 SET character_set_client  = @saved_cs_client */ ;
+/*!50003 SET character_set_results = @saved_cs_results */ ;
+/*!50003 SET collation_connection  = @saved_col_connection */ ;
+
 -- ==============================================================================
 -- 1. MÓDULO VENCIMIENTOS — Fase 1 (manual) + Fase 2 (automatización SUNAT)
 --    Control tributario/laboral de las empresas cliente del estudio.
@@ -1063,6 +1127,15 @@ INSERT INTO `sis_accion` (`id_modulo`, `codigo_accion`, `descripcion`, `tipo_ope
 (@id_modulo_vencimientos, 'editar_corte_preliminar', 'Registrar el cálculo interno de compras/ventas', 'UPDATE', 'ACTIVO'),
 (@id_modulo_vencimientos, 'ver_saldo_favor', 'Ver el saldo a favor arrastrado por empresa', 'READ', 'ACTIVO'),
 (@id_modulo_vencimientos, 'ver_credenciales_sunat', 'Ver/editar credenciales SUNAT de una empresa (dato sensible)', 'SPECIAL', 'ACTIVO'),
+-- Cuentas del PORTAL CLIENTE, administradas desde el modal 'Usuarios del portal' de
+-- catalogos/empresas. Acciones PROPIAS y no las de USUARIOS: quien lleva las empresas
+-- cliente tiene que poder darle acceso al portal a su contacto, y si esto pidiera
+-- 'crear_usuario' habria que darle de paso el alta de usuarios del ESTUDIO — incluido
+-- un SUPERADMIN. El alcance de estas cuatro es siempre una sola empresa.
+(@id_modulo_vencimientos, 'ver_usuario_portal', 'Ver las cuentas de portal de una empresa cliente', 'READ', 'ACTIVO'),
+(@id_modulo_vencimientos, 'crear_usuario_portal', 'Crear una cuenta de portal para una empresa cliente', 'CREATE', 'ACTIVO'),
+(@id_modulo_vencimientos, 'editar_usuario_portal', 'Editar, resetear la clave o bloquear una cuenta de portal', 'UPDATE', 'ACTIVO'),
+(@id_modulo_vencimientos, 'eliminar_usuario_portal', 'Dar de baja una cuenta de portal', 'DELETE', 'ACTIVO'),
 (@id_modulo_vencimientos, 'usar_asistente_ia', 'Usar los asistentes de IA (resumen diario, detección de inconsistencias, redacción de correos)', 'SPECIAL', 'ACTIVO'),
 (@id_modulo_vencimientos, 'exportar_pdf_vencimientos', 'Exportar a PDF el semáforo de vencimientos tributarios', 'READ', 'ACTIVO'),
 (@id_modulo_vencimientos_laboral, 'ver_vencimiento_laboral', 'Ver el estado de Planilla/AFP de todas las empresas', 'READ', 'ACTIVO'),
@@ -4527,6 +4600,31 @@ ON DUPLICATE KEY UPDATE `estado_registro` = 'ACTIVO';
 --     REFERENCES `empresa` (`id_empresa`) ON DELETE RESTRICT;
 
 -- ==============================================================================
+
+-- 2026-09-02 · Cuentas del PORTAL CLIENTE administradas desde catalogos/empresas
+--
+-- Este bloque SÍ está activo (no comentado): son INSERT idempotentes, no ALTER, así
+-- que correrlo dos veces no rompe nada y sobre una base nueva tampoco.
+--
+-- Sobre una base que YA está corriendo, además de esto hay que aplicar a mano los dos
+-- stored procedures nuevos de la sección 0 (`sis_usuario_listar_por_empresa` y
+-- `sis_usuario_cambiar_estado`): sin ellos el modal "Usuarios del portal" responde 500
+-- con "PROCEDURE does not exist".
+
+SET @id_modulo_venc_portal = (SELECT id_modulo FROM sis_modulo WHERE nombre = 'VENCIMIENTOS_TRIBUTARIO');
+
+INSERT INTO `sis_accion` (`id_modulo`, `codigo_accion`, `descripcion`, `tipo_operacion`, `estado_registro`) VALUES
+(@id_modulo_venc_portal, 'ver_usuario_portal', 'Ver las cuentas de portal de una empresa cliente', 'READ', 'ACTIVO'),
+(@id_modulo_venc_portal, 'crear_usuario_portal', 'Crear una cuenta de portal para una empresa cliente', 'CREATE', 'ACTIVO'),
+(@id_modulo_venc_portal, 'editar_usuario_portal', 'Editar, resetear la clave o bloquear una cuenta de portal', 'UPDATE', 'ACTIVO'),
+(@id_modulo_venc_portal, 'eliminar_usuario_portal', 'Dar de baja una cuenta de portal', 'DELETE', 'ACTIVO')
+ON DUPLICATE KEY UPDATE `descripcion` = VALUES(`descripcion`), `estado_registro` = 'ACTIVO';
+
+INSERT INTO `sis_permiso` (`id_rol`, `id_accion`, `estado_registro`)
+SELECT 1, id_accion, 'ACTIVO' FROM sis_accion
+WHERE id_modulo = @id_modulo_venc_portal
+  AND codigo_accion IN ('ver_usuario_portal','crear_usuario_portal','editar_usuario_portal','eliminar_usuario_portal')
+ON DUPLICATE KEY UPDATE `estado_registro` = 'ACTIVO';
 
 -- ==============================================================================
 -- DATOS DE REFERENCIA MASIVOS
