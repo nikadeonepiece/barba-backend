@@ -637,6 +637,7 @@ CREATE TABLE `empresa` (
   `estado_cliente` enum('ACTIVO','INACTIVO') NOT NULL DEFAULT 'ACTIVO' COMMENT 'Si el estudio sigue llevando esta empresa',
   `estado_sunat` enum('ACTIVO','SUSPENDIDA','BAJA_DEFINITIVA') NOT NULL DEFAULT 'ACTIVO' COMMENT 'Situación de la empresa ante SUNAT, informativo',
   `observaciones` text,
+  `logo_url` varchar(255) DEFAULT NULL COMMENT 'Ruta RELATIVA del logo dentro de uploads/, ej: /uploads/logos-empresa/logo-12-xxx.png. El frontend arma la URL con environment.uploadsUrlGestion. Va en la carpeta pública a propósito: un logo no es dato sensible y tiene que poder renderizarse en un <img> sin token',
   `sunat_sol_usuario` varbinary(255) DEFAULT NULL COMMENT 'Cifrado en aplicación (AES-256-GCM), no MySQL AES_ENCRYPT',
   `sunat_sol_password` varbinary(255) DEFAULT NULL COMMENT 'Cifrado en aplicación. Clave SOL para acceso manual de una persona',
   `sunat_api_client_id` varbinary(255) DEFAULT NULL COMMENT 'Cifrado en aplicación. Credencial OAuth2 de api.sunat.gob.pe para uso del sistema (Fase 2)',
@@ -793,6 +794,7 @@ DELIMITER ;;
 CREATE PROCEDURE `empresa_listar`(IN p_estado_cliente VARCHAR(20), IN p_search VARCHAR(200))
 BEGIN
     SELECT e.id_empresa, e.razon_social, e.ruc, e.regimen_tributario, e.estado_cliente, e.estado_sunat,
+           e.logo_url,
            e.id_encargado_contable, uc.nombres AS encargado_contable_nombres,
            e.id_encargado_laboral, ul.nombres AS encargado_laboral_nombres,
            RIGHT(e.ruc, 1) AS digito_ruc
@@ -811,6 +813,7 @@ DELIMITER ;;
 CREATE PROCEDURE `empresa_obtener`(IN p_id INT)
 BEGIN
     SELECT id_empresa, razon_social, ruc, regimen_tributario, estado_cliente, estado_sunat, observaciones,
+           logo_url,
            id_encargado_contable, id_encargado_laboral, RIGHT(ruc, 1) AS digito_ruc
     FROM empresa
     WHERE id_empresa = p_id AND estado_registro = 'ACTIVO';
@@ -831,6 +834,18 @@ BEGIN
         id_encargado_contable = p_id_encargado_contable, id_encargado_laboral = p_id_encargado_laboral,
         id_usuario_mod = p_id_usuario_mod
     WHERE id_empresa = p_id;
+END ;;
+DELIMITER ;
+
+-- El logo NO viaja por `empresa_actualizar`: la ruta la fija el backend recién cuando
+-- multer terminó de escribir el archivo, no el formulario. Mezclarlos obligaría a que
+-- cada guardado del formulario reenviara la ruta actual del logo, y un olvido lo borraría.
+DROP PROCEDURE IF EXISTS `empresa_logo_actualizar`;
+DELIMITER ;;
+CREATE PROCEDURE `empresa_logo_actualizar`(IN p_id INT, IN p_logo_url VARCHAR(255), IN p_id_usuario_mod INT)
+BEGIN
+    UPDATE empresa SET logo_url = p_logo_url, id_usuario_mod = p_id_usuario_mod
+    WHERE id_empresa = p_id AND estado_registro = 'ACTIVO';
 END ;;
 DELIMITER ;
 
@@ -3273,6 +3288,18 @@ CREATE TABLE `planilla_trabajador` (
   `fecha_cese` date DEFAULT NULL,
 
   -- Condiciones que cambian el cálculo
+  -- CÓMO COBRA. No es CUÁNTO (eso es planilla_trabajador_remuneracion.sueldo_basico):
+  -- es qué SIGNIFICA ese número y cómo se convierte en el básico del mes.
+  --   MENSUAL → sueldo del mes completo. valor_dia = sueldo / dias_mes (30).
+  --   JORNAL  → tarifa por DÍA. valor_dia = sueldo, tal cual. Es el obrero de
+  --             construcción y el personal de campo: ahí no se prorratea nada.
+  --   HORA    → tarifa por HORA. valor_dia = sueldo × horas_jornada.
+  --   DESTAJO → por unidad producida. El motor NO calcula básico: el monto lo carga
+  --             el estudio en "Entrada de datos", porque las unidades no están acá.
+  -- Va en el trabajador y no en la empresa a propósito: la misma empresa tiene
+  -- empleados mensuales y obreros a jornal dentro de la misma planilla.
+  `modalidad_pago` enum('MENSUAL','JORNAL','HORA','DESTAJO') NOT NULL DEFAULT 'MENSUAL'
+    COMMENT 'Cómo se interpreta el sueldo básico al calcular. MENSUAL = sueldo/30 por día',
   `jornada_maxima` tinyint(1) NOT NULL DEFAULT 1 COMMENT 'Sujeto a jornada máxima: si no, no genera horas extras',
   `sujeto_fiscalizacion` tinyint(1) NOT NULL DEFAULT 1,
   `discapacidad` tinyint(1) NOT NULL DEFAULT 0,
@@ -3568,6 +3595,8 @@ CREATE TABLE `planilla_detalle` (
   `snap_factor_cts` decimal(4,2) NOT NULL DEFAULT 1.00,
   `snap_factor_gratificacion` decimal(4,2) NOT NULL DEFAULT 1.00,
   `snap_sueldo_basico` decimal(12,2) NOT NULL,
+  `snap_modalidad_pago` enum('MENSUAL','JORNAL','HORA','DESTAJO') NOT NULL DEFAULT 'MENSUAL'
+    COMMENT 'Cómo se interpretó el básico en ESTE cálculo. Sin el snapshot, pasar a alguien de mensual a jornal cambiaría en silencio la re-explicación de todas sus planillas viejas',
   `snap_regimen_pensionario` enum('ONP','AFP','SIN_REGIMEN') NOT NULL,
   `snap_id_afp` int DEFAULT NULL,
   `snap_id_afp_tasa` int DEFAULT NULL COMMENT 'Qué fila de tasas se usó: permite auditar el descuento años después',
@@ -4530,6 +4559,342 @@ ON DUPLICATE KEY UPDATE `descripcion` = VALUES(`descripcion`), `estado_registro`
 INSERT INTO `sis_permiso` (`id_rol`, `id_accion`, `estado_registro`)
 SELECT (SELECT id_rol FROM sis_rol WHERE nombre = 'CLIENTE'), id_accion, 'ACTIVO'
 FROM sis_accion WHERE id_modulo = @id_modulo_planillas_cliente
+ON DUPLICATE KEY UPDATE `estado_registro` = 'ACTIVO';
+
+-- ==============================================================================
+-- 9. PORTAL CLIENTE — ASISTENCIA y FORMA DE COBRO
+-- ==============================================================================
+-- Hasta acá el portal del cliente era SOLO LECTURA y estaba escrito en todos lados.
+-- Este bloque abre la ÚNICA excepción, y conviene entender por qué:
+--
+--   Quién sabe si Fulano vino a trabajar el martes es la empresa, no el estudio. Hoy
+--   ese dato llega por WhatsApp a fin de mes y alguien del estudio lo teclea. El
+--   portal lo captura en origen, día por día, y de paso queda el registro de control
+--   de asistencia que SUNAFIL exige.
+--
+-- Lo que el cliente PUEDE tocar sigue siendo mínimo y no toca ningún cálculo cerrado:
+-- marcar el día de su propia gente y declarar cómo cobra cada uno. NO puede calcular,
+-- ni cerrar, ni cambiar un sueldo, ni ver nada de otra empresa.
+
+-- ------------------------------------------------------------------------------
+-- planilla_asistencia — el tareo que carga la EMPRESA, mes a mes
+-- ------------------------------------------------------------------------------
+-- Tabla propia y no `planilla_tareo` reusada, por tres razones concretas:
+--
+--   1. `planilla_tareo.id_planilla` es NOT NULL: obligaría a que alguien del estudio
+--      abra la planilla del mes ANTES de que el cliente pueda marcar el día 1. En la
+--      práctica el periodo se abre a fin de mes.
+--   2. Ese FK va con ON DELETE CASCADE. Si el estudio borra una planilla en borrador
+--      para rehacerla, se llevaría puesto un mes entero de marcas del cliente.
+--   3. Son dos fuentes con dueños distintos. El tareo es del estudio y manda; la
+--      asistencia es del cliente. El motor lee el tareo primero y cae a la asistencia
+--      solo si el estudio no cargó nada (ver `diasDelPeriodo()` en
+--      motor-calculo.service.ts). Así el estudio corrige sin discutir con el cliente.
+--
+-- La leyenda de marcas es la MISMA (`planilla_tareo_marca`): dos leyendas distintas
+-- para lo mismo terminan en que un "F" no significa lo mismo en cada pantalla.
+CREATE TABLE `planilla_asistencia` (
+  `id_asistencia` int NOT NULL AUTO_INCREMENT,
+  `id_empresa` int NOT NULL
+    COMMENT 'Redundante con planilla_trabajador.id_empresa a propósito: es la columna por la que el portal filtra y la que hace de candado del scope, sin un JOIN extra en cada consulta',
+  `id_trabajador` int NOT NULL,
+
+  `anio` smallint NOT NULL,
+  `mes` tinyint NOT NULL COMMENT '1..12',
+  `dia` tinyint NOT NULL COMMENT '1..31',
+  `fecha` date NOT NULL
+    COMMENT 'Redundante con anio/mes/dia, a propósito: por anio+mes se consulta (la grilla del mes) y por fecha se cruza contra fecha_ingreso/fecha_cese',
+
+  `id_marca` int NOT NULL COMMENT 'A, F, V, DM… la misma leyenda que usa el tareo del estudio',
+  `observacion` varchar(255) DEFAULT NULL,
+
+  `estado_registro` enum('ACTIVO','ELIMINADO') NOT NULL DEFAULT 'ACTIVO',
+  `id_usuario_crea` int NOT NULL,
+  `id_usuario_mod` int DEFAULT NULL,
+  PRIMARY KEY (`id_asistencia`),
+  UNIQUE KEY `uk_planilla_asistencia_dia` (`id_trabajador`,`fecha`)
+    COMMENT 'Un trabajador tiene UNA marca por día. Es lo que impide que un doble click deje el día contado dos veces: no depende del disabled del frontend',
+  KEY `ix_planilla_asistencia_periodo` (`id_empresa`,`anio`,`mes`,`estado_registro`),
+  KEY `fk_planilla_asistencia_trabajador` (`id_trabajador`),
+  KEY `fk_planilla_asistencia_marca` (`id_marca`),
+  KEY `fk_planilla_asistencia_usuario` (`id_usuario_crea`),
+  CONSTRAINT `fk_planilla_asistencia_empresa` FOREIGN KEY (`id_empresa`) REFERENCES `empresa` (`id_empresa`) ON DELETE CASCADE,
+  CONSTRAINT `fk_planilla_asistencia_trabajador` FOREIGN KEY (`id_trabajador`) REFERENCES `planilla_trabajador` (`id_trabajador`) ON DELETE CASCADE,
+  CONSTRAINT `fk_planilla_asistencia_marca` FOREIGN KEY (`id_marca`) REFERENCES `planilla_tareo_marca` (`id_marca`),
+  CONSTRAINT `fk_planilla_asistencia_usuario` FOREIGN KEY (`id_usuario_crea`) REFERENCES `sis_usuario` (`id_usuario`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='MÓDULO: Planillas Cliente. Asistencia diaria que carga la propia empresa desde el portal. Alimenta el cálculo cuando el estudio no cargó tareo.';
+
+-- ------------------------------------------------------------------------------
+-- Permisos nuevos del portal (módulo PLANILLAS_CLIENTE)
+-- ------------------------------------------------------------------------------
+-- Las dos acciones de escritura van SEPARADAS de las de lectura: hay empresas donde
+-- el dueño quiere mirar la asistencia sin poder cambiarla, y con un solo permiso eso
+-- no se puede expresar.
+SET @id_modulo_planillas_cliente = (SELECT id_modulo FROM sis_modulo WHERE nombre = 'PLANILLAS_CLIENTE');
+
+INSERT INTO `sis_accion` (`id_modulo`, `codigo_accion`, `descripcion`, `tipo_operacion`, `estado_registro`) VALUES
+(@id_modulo_planillas_cliente, 'ver_asistencia_cliente',        'Ver la asistencia diaria de los trabajadores de su empresa',        'READ',   'ACTIVO'),
+(@id_modulo_planillas_cliente, 'editar_asistencia_cliente',     'Marcar y corregir la asistencia diaria de su empresa',              'UPDATE', 'ACTIVO'),
+(@id_modulo_planillas_cliente, 'ver_modalidad_pago_cliente',    'Ver cómo cobra cada trabajador (mensual, jornal, por hora)',        'READ',   'ACTIVO'),
+(@id_modulo_planillas_cliente, 'editar_modalidad_pago_cliente', 'Declarar cómo cobra cada trabajador de su empresa',                 'UPDATE', 'ACTIVO')
+ON DUPLICATE KEY UPDATE `descripcion` = VALUES(`descripcion`), `estado_registro` = 'ACTIVO';
+
+INSERT INTO `sis_permiso` (`id_rol`, `id_accion`, `estado_registro`)
+SELECT 1, id_accion, 'ACTIVO' FROM sis_accion
+WHERE id_modulo = @id_modulo_planillas_cliente
+  AND codigo_accion IN ('ver_asistencia_cliente','editar_asistencia_cliente',
+                        'ver_modalidad_pago_cliente','editar_modalidad_pago_cliente')
+ON DUPLICATE KEY UPDATE `estado_registro` = 'ACTIVO';
+
+-- El rol CLIENTE las recibe todas: es exactamente para lo que existe el portal.
+INSERT INTO `sis_permiso` (`id_rol`, `id_accion`, `estado_registro`)
+SELECT (SELECT id_rol FROM sis_rol WHERE nombre = 'CLIENTE'), id_accion, 'ACTIVO'
+FROM sis_accion
+WHERE id_modulo = @id_modulo_planillas_cliente
+  AND codigo_accion IN ('ver_asistencia_cliente','editar_asistencia_cliente',
+                        'ver_modalidad_pago_cliente','editar_modalidad_pago_cliente')
+ON DUPLICATE KEY UPDATE `estado_registro` = 'ACTIVO';
+
+
+-- ==============================================================================
+-- 10. MÓDULO CAJAS — caja chica por empresa cliente
+-- ==============================================================================
+-- Modelo adaptado de `caja_chica` / `caja_chica_movimientos` de
+-- `difusion_transportesmontero` (montero/viajes/caja-proveedores), que lleva años en
+-- producción, con cuatro cambios de fondo:
+--
+--   1. LA CAJA ES DE UNA EMPRESA CLIENTE. En el original el titular era un proveedor
+--      (`id_custodio` -> cat_empresas_y_proveedores). Acá el estudio lleva la plata de
+--      171 empresas y siempre se trabaja sobre la que el usuario elige, igual que en
+--      planilla: `id_empresa` NOT NULL con FK a `empresa`. El responsable de la caja
+--      es texto libre (`responsable`) y no una FK: la persona que rinde la caja de un
+--      cliente muchas veces no está en `planilla_trabajador` (es el dueño, la
+--      administradora, el contador externo).
+--   2. UN INGRESO SUMA AL SALDO EN EL ACTO. En el original tenía que pasar por
+--      Finanzas (creaba una orden de pago y el saldo subía recién al pagarla). Acá no
+--      hay ese circuito de aprobación: quien registra la caja es quien la maneja.
+--      El día que se conecte con `tesoreria_orden_pago`, el enganche es
+--      `tabla_origen`/`id_registro_origen`, que ya están.
+--   3. Convenciones de ESTE proyecto: `estado_registro ENUM('ACTIVO','ELIMINADO')`,
+--      `id_usuario_crea`/`id_usuario_mod`, PK con nombre propio, sin `created_at`.
+--   4. `saldo_anterior`/`saldo_posterior` en cada movimiento — mismo criterio que
+--      `tesoreria_movimiento` de la sección 7: permiten auditar el orden real y
+--      detectar un descuadre sin recalcular la historia entera.
+--
+-- Por qué NO se reusa `tesoreria_cuenta` de la sección 7: una cuenta de tesorería es
+-- el saldo permanente de la empresa (banco o efectivo) y su libro es
+-- `tesoreria_movimiento`. Una caja chica es un fondo ACOTADO que se abre con un monto,
+-- se gasta y se CIERRA — tiene apertura, cierre y rendición, que una cuenta no tiene.
+-- Meter las dos cosas en la misma tabla obligaba a que la mitad de las columnas
+-- estuviera siempre en NULL para uno de los dos casos.
+
+DROP TABLE IF EXISTS `caja_chica_movimiento`;
+DROP TABLE IF EXISTS `caja_chica`;
+DROP TABLE IF EXISTS `caja_chica_concepto`;
+
+-- ------------------------------------------------------------------------------
+-- Conceptos de gasto/ingreso — catálogo GLOBAL
+-- ------------------------------------------------------------------------------
+-- No lleva `id_empresa`: "movilidad" o "útiles de oficina" significan lo mismo para
+-- todas, y un catálogo por empresa obligaría a cargar los mismos 20 conceptos 171
+-- veces. Si alguna necesita uno propio, se agrega acá y las demás simplemente no lo
+-- usan (registrar un movimiento no obliga a elegir concepto).
+CREATE TABLE `caja_chica_concepto` (
+  `id_caja_concepto` INT AUTO_INCREMENT PRIMARY KEY,
+  `codigo` VARCHAR(20) NOT NULL,
+  `nombre` VARCHAR(120) NOT NULL,
+  -- AMBOS existe para los conceptos que sirven de los dos lados (ej. "ajuste de
+  -- arqueo", que tanto suma como resta según lo que dé el conteo físico).
+  `tipo` ENUM('GASTO','INGRESO','AMBOS') NOT NULL DEFAULT 'GASTO',
+  `orden` INT NOT NULL DEFAULT 0,
+  `estado_registro` ENUM('ACTIVO','ELIMINADO') NOT NULL DEFAULT 'ACTIVO',
+  `id_usuario_crea` INT NULL,
+  `id_usuario_mod` INT NULL,
+  UNIQUE KEY `uq_caja_concepto_codigo` (`codigo`),
+  KEY `idx_caja_concepto_tipo` (`tipo`, `estado_registro`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='MÓDULO: CAJAS — catálogo de conceptos de movimiento';
+
+-- ------------------------------------------------------------------------------
+-- La caja: un fondo abierto a nombre de una empresa cliente
+-- ------------------------------------------------------------------------------
+CREATE TABLE `caja_chica` (
+  `id_caja` INT AUTO_INCREMENT PRIMARY KEY,
+  `id_empresa` INT NOT NULL,
+  `nombre` VARCHAR(120) NOT NULL COMMENT 'Cómo la llama el cliente: Caja chica oficina, Caja obra Surco',
+  `responsable` VARCHAR(150) NULL COMMENT 'Quién rinde la caja. Texto libre: no siempre está en el padrón de trabajadores',
+  `monto_inicial` DECIMAL(14,2) NOT NULL DEFAULT 0.00,
+  -- Saldo corriente, mantenido por el service DENTRO de la misma transacción que el
+  -- movimiento. Se guarda en vez de calcularlo con un SUM() cada vez porque el saldo
+  -- se muestra en toda pantalla y la tabla de movimientos crece sin límite.
+  `saldo_actual` DECIMAL(14,2) NOT NULL DEFAULT 0.00,
+  `estado` ENUM('ABIERTA','CERRADA') NOT NULL DEFAULT 'ABIERTA',
+  `fecha_apertura` DATE NOT NULL,
+  `fecha_cierre` DATE NULL,
+  `observaciones` VARCHAR(500) NULL,
+  `estado_registro` ENUM('ACTIVO','ELIMINADO') NOT NULL DEFAULT 'ACTIVO',
+  `id_usuario_crea` INT NULL,
+  `id_usuario_mod` INT NULL,
+  -- Una empresa puede tener VARIAS cajas a la vez (oficina, obra, sucursal), pero no
+  -- dos con el mismo nombre: al elegir en un desplegable serían indistinguibles.
+  -- El nombre de una caja ELIMINADA sigue ocupado — mismo trato que
+  -- `uq_tercero_empresa_doc` en la sección 7.
+  UNIQUE KEY `uq_caja_empresa_nombre` (`id_empresa`, `nombre`),
+  KEY `idx_caja_empresa` (`id_empresa`, `estado`, `estado_registro`),
+  CONSTRAINT `fk_caja_empresa` FOREIGN KEY (`id_empresa`) REFERENCES `empresa` (`id_empresa`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='MÓDULO: CAJAS — fondo de caja chica por empresa cliente';
+
+-- ------------------------------------------------------------------------------
+-- Movimientos: el libro de la caja
+-- ------------------------------------------------------------------------------
+-- La APERTURA también es un movimiento (`tabla_origen = 'caja_chica_apertura'`). Sin
+-- eso el monto inicial no aparece en el estado de cuenta y las columnas no cuadran
+-- con el saldo: el usuario ve "saldo 300" con gastos por 200 y ningún ingreso.
+--
+-- No se borra nada: anular es `estado = 'ANULADO'` con su motivo, porque el arqueo de
+-- ese día ya se firmó con el movimiento adentro.
+CREATE TABLE `caja_chica_movimiento` (
+  `id_movimiento` INT AUTO_INCREMENT PRIMARY KEY,
+  `id_caja` INT NOT NULL,
+  `id_caja_concepto` INT NULL,
+  `tipo` ENUM('INGRESO','EGRESO') NOT NULL,
+  `fecha` DATE NOT NULL,
+  `monto` DECIMAL(14,2) NOT NULL,
+  `medio_pago` ENUM('EFECTIVO','TRANSFERENCIA','DEPOSITO','YAPE_PLIN','TARJETA','OTRO') NOT NULL DEFAULT 'EFECTIVO',
+  -- Foto del saldo antes y después de ESTE movimiento.
+  `saldo_anterior` DECIMAL(14,2) NULL,
+  `saldo_posterior` DECIMAL(14,2) NULL,
+  `descripcion` VARCHAR(500) NULL,
+  `tipo_comprobante` ENUM('FACTURA','BOLETA','RECIBO','TICKET','VOUCHER','NINGUNO') NOT NULL DEFAULT 'NINGUNO',
+  `nro_comprobante` VARCHAR(50) NULL,
+  -- Ruta RELATIVA dentro de `storage-privado/caja-comprobantes`. Es privada, no
+  -- `uploads/`: una boleta trae RUC, razón social y montos de un cliente del estudio.
+  `ruta_comprobante` VARCHAR(500) NULL,
+  `nombre_comprobante` VARCHAR(255) NULL COMMENT 'Nombre original del archivo: la descarga no debe salir con el nombre aleatorio del disco',
+  -- Quién generó el movimiento cuando no lo tipeó una persona. Hoy solo lo usa la
+  -- apertura; van como VARCHAR y no como ENUM a propósito (mismo criterio que
+  -- `tesoreria_movimiento`): el ENUM obliga a un ALTER cada vez que otro módulo
+  -- registra plata acá, y esos ALTER se olvidan.
+  `tabla_origen` VARCHAR(50) NULL,
+  `id_registro_origen` INT NULL,
+  `estado` ENUM('REGISTRADO','ANULADO') NOT NULL DEFAULT 'REGISTRADO',
+  `motivo_anulacion` VARCHAR(255) NULL,
+  `id_usuario_anula` INT NULL,
+  -- ── Revisión del estudio ──────────────────────────────────────────────────
+  -- Existe por el PORTAL CLIENTE: la empresa carga sus gastos con la boleta (es el
+  -- dato que ella conoce de primera mano y el estudio no), pero un monto cargado por
+  -- el cliente NO entra a contabilidad sin que alguien del estudio lo mire.
+  --
+  -- Un movimiento solo mueve el saldo cuando `estado = 'REGISTRADO'` Y
+  -- `revision = 'APROBADO'`. Lo que el cliente carga nace 'POR_REVISAR': se ve en su
+  -- estado de cuenta, pero no descuenta hasta que el estudio lo aprueba.
+  --
+  -- El DEFAULT es 'APROBADO' a propósito: lo que registra el estudio desde la
+  -- intranet ya está revisado por definición, y así el módulo de intranet no tuvo que
+  -- cambiar de comportamiento al agregarse el portal.
+  `revision` ENUM('APROBADO','POR_REVISAR','RECHAZADO') NOT NULL DEFAULT 'APROBADO',
+  `motivo_rechazo` VARCHAR(255) NULL,
+  `id_usuario_revisa` INT NULL,
+  `estado_registro` ENUM('ACTIVO','ELIMINADO') NOT NULL DEFAULT 'ACTIVO',
+  `id_usuario_crea` INT NULL,
+  `id_usuario_mod` INT NULL,
+  KEY `idx_mov_caja_fecha` (`id_caja`, `fecha`),
+  KEY `idx_mov_caja_estado` (`id_caja`, `estado`, `estado_registro`),
+  KEY `idx_mov_concepto` (`id_caja_concepto`),
+  KEY `idx_mov_origen` (`tabla_origen`, `id_registro_origen`),
+  -- La bandeja de "pendientes por revisar" del estudio cruza TODAS las empresas, así
+  -- que el índice va por revisión y no por caja.
+  KEY `idx_mov_revision` (`revision`, `estado`, `estado_registro`),
+  CONSTRAINT `fk_mov_caja` FOREIGN KEY (`id_caja`) REFERENCES `caja_chica` (`id_caja`),
+  CONSTRAINT `fk_mov_caja_concepto` FOREIGN KEY (`id_caja_concepto`) REFERENCES `caja_chica_concepto` (`id_caja_concepto`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='MÓDULO: CAJAS — libro de movimientos de una caja chica';
+
+-- ------------------------------------------------------------------------------
+-- Semilla de conceptos
+-- ------------------------------------------------------------------------------
+-- Los gastos típicos de una caja chica peruana. No pretende ser exhaustiva: es lo
+-- mínimo para que la primera caja se pueda usar sin cargar el catálogo a mano.
+INSERT INTO `caja_chica_concepto` (`codigo`, `nombre`, `tipo`, `orden`, `id_usuario_crea`) VALUES
+('MOVILIDAD',      'Movilidad y taxis',                'GASTO',    10, 1),
+('COMBUSTIBLE',    'Combustible',                      'GASTO',    20, 1),
+('UTILES',         'Útiles de oficina',                'GASTO',    30, 1),
+('LIMPIEZA',       'Artículos de limpieza',            'GASTO',    40, 1),
+('MENSAJERIA',     'Mensajería y courier',             'GASTO',    50, 1),
+('TRAMITES',       'Trámites y tasas (SUNAT, notaría)', 'GASTO',   60, 1),
+('MANTENIMIENTO',  'Mantenimiento y reparaciones',     'GASTO',    70, 1),
+('SERVICIOS',      'Servicios (luz, agua, internet)',  'GASTO',    80, 1),
+('ATENCIONES',     'Atenciones y refrigerios',         'GASTO',    90, 1),
+('OTROS_GASTOS',   'Otros gastos',                     'GASTO',   100, 1),
+('REPOSICION',     'Reposición de fondo',              'INGRESO', 110, 1),
+('DEVOLUCION',     'Devolución de vuelto o saldo',     'INGRESO', 120, 1),
+('AJUSTE_ARQUEO',  'Ajuste por arqueo',                'AMBOS',   130, 1)
+ON DUPLICATE KEY UPDATE `nombre` = VALUES(`nombre`), `tipo` = VALUES(`tipo`), `orden` = VALUES(`orden`);
+
+-- ------------------------------------------------------------------------------
+-- Permisos
+-- ------------------------------------------------------------------------------
+-- Las acciones cuelgan del módulo TESORERIA que ya declara la sección 7: cajas es la
+-- primera pantalla de ese módulo que se implementa, y crear un `sis_modulo` aparte
+-- obligaría a que un mismo usuario tuviera dos módulos para manejar la misma plata.
+--
+-- Claves en SINGULAR también en `ver_` (convención del proyecto): `ver_caja`, no
+-- `ver_cajas`. Las de movimiento llevan el sufijo `_caja` para no chocar con
+-- `crear_movimiento`/`anular_movimiento`, que la sección 7 ya reservó para
+-- `tesoreria_movimiento`: son otro libro y otra pantalla.
+SET @id_modulo_tesoreria_cajas = (SELECT id_modulo FROM sis_modulo WHERE nombre = 'TESORERIA');
+
+INSERT INTO `sis_accion` (`id_modulo`, `codigo_accion`, `descripcion`, `tipo_operacion`, `estado_registro`) VALUES
+(@id_modulo_tesoreria_cajas, 'ver_caja',               'Ver las cajas chicas y su estado de cuenta',        'READ',    'ACTIVO'),
+(@id_modulo_tesoreria_cajas, 'crear_caja',             'Abrir una caja chica para una empresa',             'CREATE',  'ACTIVO'),
+(@id_modulo_tesoreria_cajas, 'editar_caja',            'Corregir los datos y el monto inicial de una caja',  'UPDATE',  'ACTIVO'),
+(@id_modulo_tesoreria_cajas, 'cerrar_caja',            'Cerrar una caja: deja de aceptar movimientos',      'SPECIAL', 'ACTIVO'),
+(@id_modulo_tesoreria_cajas, 'eliminar_caja',          'Dar de baja una caja sin movimientos',              'DELETE',  'ACTIVO'),
+(@id_modulo_tesoreria_cajas, 'crear_movimiento_caja',  'Registrar un ingreso o un gasto en una caja',       'CREATE',  'ACTIVO'),
+(@id_modulo_tesoreria_cajas, 'editar_movimiento_caja', 'Corregir un movimiento de caja ya registrado',      'UPDATE',  'ACTIVO'),
+(@id_modulo_tesoreria_cajas, 'anular_movimiento_caja', 'Anular un movimiento de caja y revertir su saldo',  'SPECIAL', 'ACTIVO'),
+(@id_modulo_tesoreria_cajas, 'revisar_movimiento_caja','Aprobar o rechazar un gasto cargado por el cliente', 'SPECIAL', 'ACTIVO'),
+(@id_modulo_tesoreria_cajas, 'exportar_excel_caja',    'Exportar cajas y estados de cuenta a Excel',        'READ',    'ACTIVO'),
+(@id_modulo_tesoreria_cajas, 'exportar_pdf_caja',      'Exportar cajas y estados de cuenta a PDF',          'READ',    'ACTIVO')
+ON DUPLICATE KEY UPDATE `descripcion` = VALUES(`descripcion`), `estado_registro` = 'ACTIVO';
+
+INSERT INTO `sis_permiso` (`id_rol`, `id_accion`, `estado_registro`)
+SELECT 1, id_accion, 'ACTIVO' FROM sis_accion
+WHERE id_modulo = @id_modulo_tesoreria_cajas
+  AND codigo_accion IN ('ver_caja','crear_caja','editar_caja','cerrar_caja','eliminar_caja',
+                        'crear_movimiento_caja','editar_movimiento_caja','anular_movimiento_caja',
+                        'revisar_movimiento_caja','exportar_excel_caja','exportar_pdf_caja')
+ON DUPLICATE KEY UPDATE `estado_registro` = 'ACTIVO';
+
+-- ------------------------------------------------------------------------------
+-- Permisos del PORTAL CLIENTE — módulo propio, no PLANILLAS_CLIENTE
+-- ------------------------------------------------------------------------------
+-- `PLANILLAS_CLIENTE` se llama "Planillas Cliente" y agrupa personal, planillas,
+-- asistencia y modalidad de pago. Una caja chica no es planilla: meterla ahí haría que
+-- la pantalla de permisos muestre "Planillas Cliente > ver caja", y obligaría a darle
+-- permisos de planilla a un cliente que solo usa la caja.
+INSERT INTO `sis_modulo` (`nombre`, `etiqueta`, `estado_registro`)
+SELECT 'CAJAS_CLIENTE', 'Cajas Cliente', 'ACTIVO'
+WHERE NOT EXISTS (SELECT 1 FROM `sis_modulo` WHERE `nombre` = 'CAJAS_CLIENTE');
+
+SET @id_modulo_cajas_cliente = (SELECT id_modulo FROM sis_modulo WHERE nombre = 'CAJAS_CLIENTE');
+
+INSERT INTO `sis_accion` (`id_modulo`, `codigo_accion`, `descripcion`, `tipo_operacion`, `estado_registro`) VALUES
+(@id_modulo_cajas_cliente, 'ver_caja_cliente',              'Ver las cajas chicas de su propia empresa',              'READ',    'ACTIVO'),
+(@id_modulo_cajas_cliente, 'crear_movimiento_caja_cliente', 'Registrar un gasto de caja, sujeto a revisión',          'CREATE',  'ACTIVO'),
+(@id_modulo_cajas_cliente, 'exportar_pdf_caja_cliente',     'Descargar el estado de cuenta de su caja en PDF',        'SPECIAL', 'ACTIVO')
+ON DUPLICATE KEY UPDATE `descripcion` = VALUES(`descripcion`), `estado_registro` = 'ACTIVO';
+
+-- El rol 1 las recibe por convención del proyecto (para que la pantalla de permisos
+-- las muestre marcadas), aunque el bypass del guard lo deja pasar igual.
+INSERT INTO `sis_permiso` (`id_rol`, `id_accion`, `estado_registro`)
+SELECT 1, id_accion, 'ACTIVO' FROM sis_accion
+WHERE id_modulo = @id_modulo_cajas_cliente
+ON DUPLICATE KEY UPDATE `estado_registro` = 'ACTIVO';
+
+-- El rol CLIENTE las recibe todas: es exactamente para lo que existe el portal.
+INSERT INTO `sis_permiso` (`id_rol`, `id_accion`, `estado_registro`)
+SELECT (SELECT id_rol FROM sis_rol WHERE nombre = 'CLIENTE'), id_accion, 'ACTIVO'
+FROM sis_accion
+WHERE id_modulo = @id_modulo_cajas_cliente
 ON DUPLICATE KEY UPDATE `estado_registro` = 'ACTIVO';
 
 -- ==============================================================================
@@ -12707,6 +13072,35 @@ FROM `planilla_sunat_catalogo` c
 WHERE c.tabla_num = 36 AND c.estado_registro = 'ACTIVO'
 ON DUPLICATE KEY UPDATE `nombre` = VALUES(`nombre`);
 
+
+-- 2026-09-03 · Asistencia del portal cliente y modalidad de pago
+--
+-- Sobre una base NUEVA no hace falta nada: las dos columnas ya están en los
+-- CREATE TABLE de arriba y `planilla_asistencia` se crea con la sección 9.
+--
+-- Sobre una base que YA está corriendo, aplicar en este orden:
+--   1. Los dos ALTER de abajo (van COMENTADOS por la misma razón que los anteriores:
+--      MySQL no soporta ADD COLUMN IF NOT EXISTS y sobre una base nueva fallarían con
+--      "Duplicate column name", cortando la carga entera de bd.sql).
+--   2. El CREATE TABLE `planilla_asistencia` de la sección 9.
+--   3. El bloque de acciones y permisos de la sección 9 (ese SÍ es idempotente).
+--
+-- Los dos ALTER llevan DEFAULT explícito: sin él, MySQL reescribe la tabla entera
+-- poniendo NULL fila por fila, y planilla_trabajador es de las que más filas tiene.
+-- Con el DEFAULT, todo el padrón existente queda como MENSUAL, que es lo que el
+-- motor venía asumiendo hasta hoy — o sea, ninguna planilla vieja cambia de número.
+--
+-- ALTER TABLE `planilla_trabajador`
+--   ADD COLUMN `modalidad_pago` enum('MENSUAL','JORNAL','HORA','DESTAJO') NOT NULL DEFAULT 'MENSUAL'
+--     COMMENT 'Cómo se interpreta el sueldo básico al calcular. MENSUAL = sueldo/30 por día'
+--     AFTER `fecha_cese`;
+--
+-- ALTER TABLE `planilla_detalle`
+--   ADD COLUMN `snap_modalidad_pago` enum('MENSUAL','JORNAL','HORA','DESTAJO') NOT NULL DEFAULT 'MENSUAL'
+--     COMMENT 'Cómo se interpretó el básico en ESTE cálculo'
+--     AFTER `snap_sueldo_basico`;
+
+-- ==============================================================================
 
 /*!40101 SET SQL_MODE=@OLD_SQL_MODE */;
 /*!40014 SET FOREIGN_KEY_CHECKS=@OLD_FOREIGN_KEY_CHECKS */;

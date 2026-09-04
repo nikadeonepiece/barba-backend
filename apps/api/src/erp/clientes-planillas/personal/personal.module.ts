@@ -1,6 +1,6 @@
 import { Module } from '@nestjs/common';
 import { CommonModule } from '@app/common';
-import { ContratosModule } from '../../planilla/contratos/contratos.module';
+import { ContratosModule } from '../../estudio-barba/planilla/contratos/contratos.module';
 import { PersonalClienteController } from './personal.controller';
 import { PersonalClienteService } from './personal.service';
 

@@ -2,7 +2,7 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { DataSource } from 'typeorm';
 import { InjectDataSource } from '@nestjs/typeorm';
 import type { Response } from 'express';
-import { ContratosArchivoService } from '../../planilla/contratos/contratos-archivo.service';
+import { ContratosArchivoService } from '../../estudio-barba/planilla/contratos/contratos-archivo.service';
 import { resolverEmpresaDelUsuario } from '../scope-empresa';
 
 const COLS_ORDER_ALLOWED = ['apellido_paterno', 'fecha_ingreso', 'cargo', 'area'];

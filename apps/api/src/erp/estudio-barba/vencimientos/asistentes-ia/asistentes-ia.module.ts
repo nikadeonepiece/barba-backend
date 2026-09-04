@@ -12,7 +12,7 @@ import { AsistenteIaBaseService } from './base/asistente-ia-base.service';
  * (rate limiting por usuario, tope de tokens y registro de costo en `uso_ia`).
  *
  * Antes era `fase3.module.ts` y además declaraba ParametrosTributarios, que
- * no es un asistente: se movió a erp/configuracion/parametros-tributarios/.
+ * no es un asistente: se movió a erp/estudio-barba/configuracion/parametros-tributarios/.
  */
 @Module({
   controllers: [

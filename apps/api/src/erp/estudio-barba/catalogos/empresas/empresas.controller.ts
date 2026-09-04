@@ -1,6 +1,8 @@
-import { Controller, Get, Post, Put, Delete, Body, Param, Query, UseGuards, ParseIntPipe, Req } from '@nestjs/common';
+import { Controller, Get, Post, Put, Delete, Body, Param, Query, UseGuards, ParseIntPipe, Req, UseInterceptors, UploadedFile, BadRequestException } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { JwtAuthGuard, PermissionsGuard, RequirePermissions } from '@app/auth';
 import { EmpresasService } from './empresas.service';
+import { CONFIG_SUBIDA_LOGO } from './empresa-logo.service';
 import {
   CreateEmpresaDto,
   UpdateEmpresaDto,
@@ -52,6 +54,26 @@ export class EmpresasController {
   @Delete(':id')
   remove(@Param('id', ParseIntPipe) id: number, @Req() req: any) {
     return this.empresasService.remove(id, req.user.userId);
+  }
+
+  // ── Logo de la empresa ────────────────────────────────────────────────────
+  //
+  // Pide `editar_empresa` (no un permiso propio): cambiar el logo es editar la ficha,
+  // y quien puede tocar la razón social puede tocar la imagen. El archivo cae en la
+  // carpeta PÚBLICA `uploads/logos-empresa` — ver el porqué en empresa-logo.service.ts.
+
+  @RequirePermissions('VENCIMIENTOS_TRIBUTARIO', 'editar_empresa')
+  @Post(':id/logo')
+  @UseInterceptors(FileInterceptor('logo', CONFIG_SUBIDA_LOGO))
+  subirLogo(@Param('id', ParseIntPipe) id: number, @UploadedFile() logo: Express.Multer.File, @Req() req: any) {
+    if (!logo) throw new BadRequestException('No se recibió ninguna imagen');
+    return this.empresasService.guardarLogo(id, logo, req.user.userId);
+  }
+
+  @RequirePermissions('VENCIMIENTOS_TRIBUTARIO', 'editar_empresa')
+  @Delete(':id/logo')
+  quitarLogo(@Param('id', ParseIntPipe) id: number, @Req() req: any) {
+    return this.empresasService.quitarLogo(id, req.user.userId);
   }
 
   @RequirePermissions('VENCIMIENTOS_TRIBUTARIO', 'ver_credenciales_sunat')

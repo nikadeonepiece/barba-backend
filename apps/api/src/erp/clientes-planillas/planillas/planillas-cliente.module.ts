@@ -1,6 +1,6 @@
 import { Module } from '@nestjs/common';
 import { CommonModule } from '@app/common';
-import { PlanillasModule } from '../../planilla/planillas/planillas.module';
+import { PlanillasModule } from '../../estudio-barba/planilla/planillas/planillas.module';
 import { PlanillasClienteController } from './planillas-cliente.controller';
 import { PlanillasClienteService } from './planillas-cliente.service';
 

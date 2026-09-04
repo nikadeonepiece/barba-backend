@@ -8,7 +8,7 @@ export class CreateUsuarioDto {
 
   /**
    * Empresa cliente del usuario. Es lo que convierte una cuenta normal en una cuenta
-   * del PORTAL CLIENTE: viaja en el JWT y acota cada consulta de `erp/cliente/`.
+   * del PORTAL CLIENTE: viaja en el JWT y acota cada consulta de `erp/clientes-planillas/`.
    *
    * Se omite (o se manda `null`) para el personal del estudio, que no está atado a
    * ninguna empresa. `@IsOptional()` acepta las dos formas.

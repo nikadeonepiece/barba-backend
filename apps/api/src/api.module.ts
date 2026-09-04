@@ -15,12 +15,15 @@ import { MailModule } from './core/mail/mail.module';
 import { AuthModule as LocalAuthModule } from './core/auth/auth.module';
 
 // --- Módulos de negocio: Vencimientos (Fase 1 + Fase 2) ---
-import { VencimientosModule } from './erp/vencimientos/vencimientos.module';
-import { ConfiguracionesModule } from './erp/configuracion/configuraciones.module';
-import { PlanillaModule } from './erp/planilla/planilla.module';
+import { VencimientosModule } from './erp/estudio-barba/vencimientos/vencimientos.module';
+import { ConfiguracionesModule } from './erp/estudio-barba/configuracion/configuraciones.module';
+import { PlanillaModule } from './erp/estudio-barba/planilla/planilla.module';
+
+// --- Módulo de negocio: Tesorería (hoy solo cajas chicas) ---
+import { TesoreriaModule } from './erp/estudio-barba/tesoreria/tesoreria.module';
 
 // --- Portal del cliente: la empresa entra a ver SU personal y SUS planillas ---
-import { ClienteModule } from './erp/cliente/cliente.module';
+import { ClienteModule } from './erp/clientes-planillas/cliente.module';
 
 @Module({
   imports: [
@@ -36,6 +39,7 @@ import { ClienteModule } from './erp/cliente/cliente.module';
     VencimientosModule,
     ConfiguracionesModule,
     PlanillaModule,
+    TesoreriaModule,
     ClienteModule,
   ],
   controllers: [ApiController],

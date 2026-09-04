@@ -7,6 +7,7 @@ import { CreateEmpresaDto, UpdateEmpresaDto, CreateUsuarioPortalDto, UpdateUsuar
 import { CredencialesCryptoService } from '@app/security';
 import { GuardarCredencialesDto } from './dto/empresa.dto';
 import { SunatLoginClient } from './sunat-login.client';
+import { EmpresaLogoService } from './empresa-logo.service';
 
 @Injectable()
 export class EmpresasService {
@@ -15,6 +16,7 @@ export class EmpresasService {
     private auditoriaService: AuditoriaService,
     private credencialesCrypto: CredencialesCryptoService,
     private sunatLoginClient: SunatLoginClient,
+    private empresaLogo: EmpresaLogoService,
   ) {}
 
   async create(dto: CreateEmpresaDto, userId: number) {
@@ -74,6 +76,47 @@ export class EmpresasService {
     await this.dataSource.query(`CALL empresa_eliminar(?)`, [id]);
     await this.auditoriaService.registrar('empresa', id, 'ELIMINAR', userId, antiguo.data, null);
     return { success: true, message: 'Empresa dada de baja' };
+  }
+
+  /**
+   * Guarda el logo que acaba de subir multer y borra el anterior.
+   *
+   * Va por su propio endpoint y no por `update`: la ruta la decide el backend recién
+   * cuando el archivo terminó de escribirse, y el formulario de la empresa no tiene por
+   * qué reenviarla en cada guardado (un olvido borraría el logo).
+   */
+  async guardarLogo(id: number, archivo: Express.Multer.File, userId: number) {
+    // main.ts publica `uploads/` bajo el prefijo `/uploads/`: la ruta se guarda ya con
+    // ese prefijo para que el frontend solo le anteponga `uploadsUrlGestion`.
+    const rutaNueva = `/uploads/logos-empresa/${archivo.filename}`;
+
+    let antiguo: any;
+    try {
+      antiguo = await this.findOne(id);
+    } catch (error) {
+      // multer ya escribió el archivo antes de llegar acá: si la empresa no existe o
+      // está dada de baja, hay que borrarlo o queda huérfano en el servidor.
+      this.empresaLogo.borrarSiExiste(rutaNueva);
+      throw error;
+    }
+
+    await this.dataSource.query(`CALL empresa_logo_actualizar(?, ?, ?)`, [id, rutaNueva, userId]);
+    this.empresaLogo.borrarSiExiste(antiguo.data.logo_url);
+    await this.auditoriaService.registrar('empresa', id, 'ACTUALIZAR', userId, { logo_url: antiguo.data.logo_url ?? null }, { logo_url: rutaNueva });
+
+    return { logo_url: rutaNueva, mensaje: 'Logo actualizado' };
+  }
+
+  /** Quita el logo: borra el archivo del disco y deja la columna en NULL. */
+  async quitarLogo(id: number, userId: number) {
+    const antiguo = await this.findOne(id);
+    if (!antiguo.data.logo_url) throw new BadRequestException('Esta empresa no tiene logo cargado');
+
+    await this.dataSource.query(`CALL empresa_logo_actualizar(?, ?, ?)`, [id, null, userId]);
+    this.empresaLogo.borrarSiExiste(antiguo.data.logo_url);
+    await this.auditoriaService.registrar('empresa', id, 'ACTUALIZAR', userId, { logo_url: antiguo.data.logo_url }, { logo_url: null });
+
+    return { mensaje: 'Logo eliminado' };
   }
 
   /**

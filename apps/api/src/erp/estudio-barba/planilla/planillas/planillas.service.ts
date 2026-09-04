@@ -297,15 +297,19 @@ export class PlanillasService {
         const resDet: any = await qr.query(
           `INSERT INTO planilla_detalle
             (id_planilla, id_trabajador, snap_id_regimen, snap_factor_cts, snap_factor_gratificacion,
-             snap_sueldo_basico, snap_regimen_pensionario, snap_id_afp, snap_id_afp_tasa, snap_tipo_comision_afp,
+             snap_sueldo_basico, snap_modalidad_pago, snap_regimen_pensionario, snap_id_afp, snap_id_afp_tasa, snap_tipo_comision_afp,
              dias_laborados, dias_no_laborados, dias_subsidiados, dias_faltas, dias_vacaciones,
              horas_extras_25, horas_extras_35,
              remuneracion_asegurable, base_renta_quinta, total_ingresos, total_descuentos,
              total_aportes_empleador, adelanto_quincena, neto_pagar, estado_registro)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVO')`,
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVO')`,
           [
             idPlanilla, t.id_trabajador, t.id_regimen, t.factor_cts, t.factor_gratificacion,
-            c.sueldoBasico, t.regimen_pensionario, t.id_afp ?? null, t.__id_afp_tasa ?? null, t.tipo_comision_afp ?? null,
+            // `snap_modalidad_pago` va junto al sueldo porque los dos solo tienen
+            // sentido juntos: "1950.00" no significa nada sin saber si era del mes o
+            // del día. Sin el snapshot, pasar a alguien de mensual a jornal cambiaría
+            // en silencio la re-explicación de todas sus planillas anteriores.
+            c.sueldoBasico, c.modalidad, t.regimen_pensionario, t.id_afp ?? null, t.__id_afp_tasa ?? null, t.tipo_comision_afp ?? null,
             c.dias.laborados, c.dias.faltas + c.dias.licenciaSinGoce, c.dias.subsidiados, c.dias.faltas, c.dias.vacaciones,
             c.dias.horasExtras25, c.dias.horasExtras35,
             c.remuneracionAsegurable, c.baseRentaQuinta, c.totalIngresos, c.totalDescuentos,

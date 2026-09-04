@@ -24,7 +24,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
   // para que podamos usarlos dentro de nuestra API (ej: saber quién está creando un producto).
   //
   // `idEmpresa` es el scope del PORTAL CLIENTE: sale de `sis_usuario.id_empresa` y es
-  // lo que los services de `erp/cliente/` meten en el WHERE de cada consulta. Se lee
+  // lo que los services de `erp/clientes-planillas/` meten en el WHERE de cada consulta. Se lee
   // del TOKEN y nunca del body/query — si viniera del frontend, cambiar un número en
   // la petición dejaría ver la planilla de otra empresa.
   //

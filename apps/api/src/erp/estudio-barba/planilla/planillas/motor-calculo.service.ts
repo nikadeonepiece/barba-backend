@@ -154,15 +154,29 @@ export class MotorCalculoService {
 
     // ---- Días y horas del periodo ----
     const dias = await this.diasDelPeriodo(qr, ctx, trabajador);
-    const valorDia = sueldoBasico / ctx.diasMes;
-    const valorHora = valorDia / ctx.horasJornada;
+
+    // ---- Cómo cobra: qué SIGNIFICA el sueldo básico ----
+    // Sin esta línea el motor asume que todo el mundo es mensual, y a un obrero a
+    // jornal de S/ 65 el día le liquidaría S/ 2.17 diarios (65/30). El error es de
+    // treinta veces y pasa desapercibido, porque el número sale con dos decimales y
+    // parece un cálculo. Se declara en el padrón (planilla_trabajador.modalidad_pago)
+    // y la propia empresa lo mantiene desde el portal.
+    const modalidad = trabajador.modalidad_pago || 'MENSUAL';
+    const { valorDia, valorHora } = this.valorizarJornada(modalidad, sueldoBasico, ctx);
 
     // ---- INGRESOS ----
     // Básico proporcional a los días efectivamente remunerados. Un mes completo da
     // el sueldo entero; las faltas injustificadas lo reducen.
+    // DESTAJO es la excepción: lo que cobra depende de cuánto produjo, y esa cantidad
+    // no vive en el padrón. El motor NO inventa un básico — el monto lo carga el
+    // estudio en "Entrada de datos" y entra más abajo con los conceptos manuales.
+    // Emitir acá un 0121 en cero sería peor que no emitirlo: la boleta diría
+    // "Remuneración básica: 0.00" y el trabajador leería que no le pagaron el trabajo.
     const diasRemunerados = dias.remunerados;
-    const montoBasico = r2(valorDia * diasRemunerados);
-    lineas.push(this.linea(ctx, '0121', montoBasico, { cantidad: diasRemunerados, base: sueldoBasico }));
+    if (modalidad !== 'DESTAJO') {
+      const montoBasico = r2(valorDia * diasRemunerados);
+      lineas.push(this.linea(ctx, '0121', montoBasico, { cantidad: diasRemunerados, base: sueldoBasico }));
+    }
 
     // Asignación familiar: 10% de la RMV, y solo si el régimen del trabajador la
     // contempla (la microempresa no) y tiene hijos menores.
@@ -277,7 +291,7 @@ export class MotorCalculoService {
     const netoPagar = r2(totalIngresos - totalDescuentos - adelanto);
 
     return {
-      sueldoBasico, dias, lineas,
+      sueldoBasico, modalidad, dias, lineas,
       remuneracionAsegurable, baseRentaQuinta,
       totalIngresos, totalDescuentos, totalAportes,
       adelanto, netoPagar,
@@ -305,14 +319,57 @@ export class MotorCalculoService {
   }
 
   /**
-   * Días del periodo. Prioriza el tareo (día por día); si no hay tareo, cae a lo
-   * cargado en "Entrada de datos"; si tampoco hay, asume el mes completo.
+   * Cuánto vale un día y una hora, según CÓMO cobra el trabajador.
    *
-   * Ese orden importa: el tareo es el dato más fino y el que SUNAFIL exige, así que
-   * cuando existe manda sobre cualquier resumen cargado a mano.
+   * El sueldo básico es siempre el mismo número guardado; lo que cambia es qué
+   * representa. Esta es la única función que lo sabe, y es a propósito: la pantalla
+   * "Forma de cobro" del portal muestra la misma equivalencia, así que si la fórmula
+   * se duplicara, el día que cambie una la pantalla seguiría prometiendo un valor que
+   * la boleta ya no paga.
+   *
+   *   MENSUAL → el sueldo es del MES.  valor_dia = sueldo / dias_mes (30)
+   *   JORNAL  → el sueldo es del DÍA.  valor_dia = sueldo, sin prorratear nada
+   *   HORA    → el sueldo es de la HORA. valor_dia = sueldo × horas_jornada
+   *   DESTAJO → no hay valor por tiempo. Devuelve 0 y quien llama no debe usarlo:
+   *             `calcularTrabajador` ni siquiera emite el básico en ese caso.
+   */
+  private valorizarJornada(modalidad: string, sueldoBasico: number, ctx: ContextoCalculo) {
+    switch (modalidad) {
+      case 'JORNAL':
+        return { valorDia: sueldoBasico, valorHora: sueldoBasico / ctx.horasJornada };
+      case 'HORA':
+        return { valorDia: sueldoBasico * ctx.horasJornada, valorHora: sueldoBasico };
+      case 'DESTAJO':
+        return { valorDia: 0, valorHora: 0 };
+      case 'MENSUAL':
+      default: {
+        const valorDia = sueldoBasico / ctx.diasMes;
+        return { valorDia, valorHora: valorDia / ctx.horasJornada };
+      }
+    }
+  }
+
+  /**
+   * Días del periodo. Cuatro fuentes, en este orden:
+   *
+   *   1. `planilla_tareo` — lo que cargó el ESTUDIO en la planilla.
+   *   2. `planilla_asistencia` — lo que marcó la EMPRESA en su portal.
+   *   3. "Entrada de datos" — el resumen mensual cargado a mano.
+   *   4. Mes completo.
+   *
+   * El orden es una regla de negocio, no una preferencia técnica. El tareo es el dato
+   * más fino y el que SUNAFIL exige, así que cuando existe manda. La asistencia del
+   * portal viene después porque el estudio tiene que poder CORREGIR al cliente sin
+   * discutirle: le basta con cargar el tareo de esa persona y su versión gana, sin
+   * borrarle ni pisarle lo que el cliente marcó — que sigue ahí, como constancia de lo
+   * que la empresa declaró.
+   *
+   * Ojo con el fallback 4: "no hay ningún dato" y "vino todos los días" terminan en el
+   * mismo número. Es el comportamiento que el módulo ya tenía y se conserva, pero es
+   * la razón por la que la pantalla de asistencia avisa cuando el mes está en blanco.
    */
   private async diasDelPeriodo(qr: QueryRunner, ctx: ContextoCalculo, trabajador: any) {
-    const filas = await qr.query(
+    let filas = await qr.query(
       `SELECT m.computa_dia_laborado, m.computa_falta, m.computa_feriado, m.computa_descanso,
               m.computa_subsidio, m.computa_vacaciones, m.computa_licencia_con_goce,
               m.computa_licencia_sin_goce,
@@ -327,6 +384,27 @@ export class MotorCalculoService {
                 m.computa_licencia_con_goce, m.computa_licencia_sin_goce`,
       [trabajador.__id_planilla, trabajador.id_trabajador],
     );
+
+    // Asistencia del portal cliente. No tiene columnas de horas extras ni tardanza
+    // (esa pantalla marca solo el día), así que se devuelven en cero de forma
+    // explícita: si el trabajador hizo horas extras, se cargan en "Entrada de datos".
+    if (filas.length === 0) {
+      filas = await qr.query(
+        `SELECT m.computa_dia_laborado, m.computa_falta, m.computa_feriado, m.computa_descanso,
+                m.computa_subsidio, m.computa_vacaciones, m.computa_licencia_con_goce,
+                m.computa_licencia_sin_goce,
+                COUNT(*) AS dias,
+                0 AS he25, 0 AS he35, 0 AS tardanza
+         FROM planilla_asistencia a
+         JOIN planilla_tareo_marca m ON m.id_marca = a.id_marca
+         WHERE a.id_empresa = ? AND a.id_trabajador = ? AND a.anio = ? AND a.mes = ?
+           AND a.estado_registro = 'ACTIVO'
+         GROUP BY m.id_marca, m.computa_dia_laborado, m.computa_falta, m.computa_feriado,
+                  m.computa_descanso, m.computa_subsidio, m.computa_vacaciones,
+                  m.computa_licencia_con_goce, m.computa_licencia_sin_goce`,
+        [trabajador.id_empresa, trabajador.id_trabajador, ctx.anio, ctx.mes],
+      );
+    }
 
     const acc = {
       laborados: 0, faltas: 0, feriados: 0, descanso: 0, subsidiados: 0,

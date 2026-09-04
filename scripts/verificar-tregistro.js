@@ -32,7 +32,7 @@
  *
  * 4. Al confirmar los pasos reales, actualizar LOS DOS lugares:
  *      - el bloque SELECTORES de
- *        apps/api/src/erp/planilla/trabajadores/sunat-tregistro-scraping.client.ts
+ *        apps/api/src/erp/estudio-barba/planilla/trabajadores/sunat-tregistro-scraping.client.ts
  *      - la guía 'TREG' en guias_sunat (Configuración → Guías SUNAT)
  *    Si solo actualizas uno, quedan describiendo recorridos distintos.
  */

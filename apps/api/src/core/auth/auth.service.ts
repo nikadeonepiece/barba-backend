@@ -150,6 +150,10 @@ export class AuthService {
         // autorización nunca lee esto: sale del token (ver firmarAccessToken).
         id_empresa: user.id_empresa ?? null,
         empresa: user.empresa ?? null,
+        // Ruta RELATIVA del logo de la empresa cliente (NULL para el personal del
+        // estudio). El sidebar del portal muestra este logo en lugar del de Barba:
+        // el cliente entra a SU sistema, no al del estudio.
+        empresa_logo_url: user.empresa_logo_url ?? null,
       }
     };
   }

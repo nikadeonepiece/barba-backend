@@ -35,7 +35,7 @@ async function bootstrap() {
   app.enableCors({
     origin: [
       'http://localhost:4200',
-      'http://localhost:52294',
+      'http://localhost:57035',
       'http://barba.difusioneslaborales.com',
       // El frontend de producción (environment.ts) apunta a HTTPS — sin este origen
       // el navegador bloquea por CORS toda llamada al API si no se sirve same-origin.

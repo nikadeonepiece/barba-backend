@@ -2,7 +2,7 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { DataSource } from 'typeorm';
 import { InjectDataSource } from '@nestjs/typeorm';
 import type { Response } from 'express';
-import { BoletaPdfService } from '../../planilla/planillas/boleta-pdf.service';
+import { BoletaPdfService } from '../../estudio-barba/planilla/planillas/boleta-pdf.service';
 import { resolverEmpresaDelUsuario } from '../scope-empresa';
 
 /**
