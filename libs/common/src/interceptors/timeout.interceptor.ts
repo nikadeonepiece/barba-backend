@@ -18,6 +18,12 @@ const RUTAS_LARGAS: Array<{ patron: RegExp; ms: number }> = [
   // vuelve a cortarse a los 15s con un 408 — le pasó a sincronizacion-sunat, que
   // acá seguía listado con su nombre viejo (/vencimientos/fase2/).
   { patron: /\/vencimientos\/sincronizacion-sunat\//i, ms: 180_000 },
+  // Va ANTES de la regla general de /vencimientos/sire/ porque se toma la PRIMERA
+  // coincidencia. 10 minutos y no 3, por el mismo motivo que el T-Registro de abajo:
+  // este endpoint descarga un XML por comprobante, de a uno y hasta 200 por período —
+  // el barrido completo pasa los 3 minutos y el 408 pegaba con el login SOL ya gastado
+  // y nada guardado todavía (los INSERT recién corren al final del barrido).
+  { patron: /\/vencimientos\/sire\/descargas\/sincronizar-items/i, ms: 600_000 },
   { patron: /\/vencimientos\/sire\//i, ms: 180_000 },
   { patron: /\/vencimientos\/buzon-sunat\//i, ms: 180_000 },
   // PLE: 10 minutos y no 3, por el mismo motivo que el T-Registro de abajo. SUNAT no

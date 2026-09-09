@@ -478,7 +478,15 @@ export class SireService {
     // Solo se piden los ítems de la página visible: traerlos para las ~500 filas de un
     // período completo sería un JOIN inútil, porque el usuario ve 20 a la vez.
     const pagina = filtradas.slice(offset, offset + limit);
-    const conItems = await this.adjuntarItems(idEmpresa, pagina);
+    // Los ítems SOLO existen para ventas: `sire_comprobante_item` se llena con los XML
+    // de comprobantes EMITIDOS (ver sunat-cpe.client.ts) y no distingue venta de compra.
+    // En un RCE las filas son comprobantes de PROVEEDORES, así que cruzarlas por
+    // serie+numero puede pegar con una venta propia del mismo serie-número y mostrar
+    // productos que no son de esa compra. Hasta que la tabla tenga con qué separarlos,
+    // en RCE se devuelve la lista sin ítems.
+    const conItems = descarga.tipo_libro === 'RVIE'
+      ? await this.adjuntarItems(idEmpresa, pagina)
+      : pagina.map((f) => ({ ...f, items: [] }));
 
     return {
       data: conItems,
@@ -547,7 +555,7 @@ export class SireService {
     const desde = `01/${dd(mes)}/${anio}`;
     const hasta = `${dd(ultimoDia)}/${dd(mes)}/${anio}`;
 
-    const comprobantes = await this.sunatCpeClient.descargarItemsDeVentas(
+    const { comprobantes, totalEncontrados } = await this.sunatCpeClient.descargarItemsDeVentas(
       String(empresa.ruc).trim(),
       this.credencialesCrypto.descifrar(empresa.sunat_sol_usuario).trim(),
       this.credencialesCrypto.descifrar(empresa.sunat_sol_password).trim(),
@@ -580,17 +588,27 @@ export class SireService {
 
     await this.auditoriaService.registrar(
       'sire_comprobante_item', idEmpresa, 'CREAR', idUsuario, null,
-      { periodo, comprobantes: comprobantes.length, items: filasGuardadas },
+      { periodo, comprobantes: comprobantes.length, encontrados: totalEncontrados, items: filasGuardadas },
     );
+
+    // El cliente corta el barrido en un tope de comprobantes por período. Si se aplicó,
+    // el detalle quedó INCOMPLETO y hay que decirlo: callarlo dejaba al contador viendo
+    // una grilla a medias sin nada que indicara que faltaban comprobantes.
+    const truncado = totalEncontrados > comprobantes.length;
 
     return {
       periodo,
       comprobantes: comprobantes.length,
+      encontrados: totalEncontrados,
+      truncado,
       items: filasGuardadas,
       // Sin comprobantes casi siempre significa que la empresa NO emite por SEE-SOL.
       // Decirlo acá evita que el usuario crea que el sistema falló en silencio.
       mensaje: comprobantes.length
         ? `Se sincronizaron ${filasGuardadas} ítem(s) de ${comprobantes.length} comprobante(s).`
+          + (truncado
+            ? ` OJO: SUNAT reportó ${totalEncontrados} comprobantes en el período — se procesaron los primeros ${comprobantes.length} y el resto quedó SIN sincronizar.`
+            : '')
         : 'SUNAT no devolvió comprobantes emitidos en este período. Si la empresa emite con serie F### '
           + '(sistema propio u OSE), sus XML no están en el portal SOL y hay que integrar con su facturador.',
     };

@@ -36,7 +36,7 @@ async function bootstrap() {
   // del dominio a propósito: el environment.ts de prod apunta a HTTPS y sin ese origen
   // el navegador bloquea todas las llamadas al API si no se sirve same-origin.
   const origenesProduccion = [
-    'http://localhost:62452',
+    'http://localhost:63319',
     'http://barba.difusioneslaborales.com',
     'https://barba.difusioneslaborales.com',
     'https://www.barba.difusioneslaborales.com',

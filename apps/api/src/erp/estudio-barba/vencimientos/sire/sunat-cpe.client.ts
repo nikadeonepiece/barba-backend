@@ -113,7 +113,7 @@ export class SunatCpeClient {
     ruc: string, solUsuario: string, solPassword: string,
     fechaDesde: string, fechaHasta: string,
     maxComprobantes = 200,
-  ): Promise<ComprobanteConItems[]> {
+  ): Promise<{ comprobantes: ComprobanteConItems[]; totalEncontrados: number }> {
     if (this.navegadorNoDisponible) throw new NavegadorCpeNoDisponibleError();
 
     let browser: Browser;
@@ -154,16 +154,20 @@ export class SunatCpeClient {
           `RUC ${ruc}: SUNAT no devolvió comprobantes emitidos entre ${fechaDesde} y ${fechaHasta}. ` +
           'Si la empresa emite con serie F### (SEE propio u OSE), sus XML no están en este módulo.',
         );
-        return [];
+        return { comprobantes: [], totalEncontrados: 0 };
       }
 
       etapa = 'descarga-xml';
+      // `totalEncontrados` viaja junto a la lista: el tope existe para acotar el barrido,
+      // pero si se aplica hay que poder AVISARLO. Devolver solo el array dejaba al
+      // llamador sin forma de distinguir "el período tenía 200" de "tenía 300 y se
+      // cortó", y el usuario se quedaba con un detalle incompleto sin saberlo.
       const salida: ComprobanteConItems[] = [];
       for (const cp of listado.slice(0, maxComprobantes)) {
         const xml = await this.descargarXml(app, query, ruc, cp);
         salida.push({ ...cp, items: xml ? SunatCpeClient.extraerItems(xml) : [] });
       }
-      return salida;
+      return { comprobantes: salida, totalEncontrados: listado.length };
     } catch (error: any) {
       const ruta = await this.guardarDebug(ruc, etapa, pageDebug);
       this.logger.error(
