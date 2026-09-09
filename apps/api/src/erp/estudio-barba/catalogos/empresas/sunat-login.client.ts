@@ -1,5 +1,18 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { chromium, Page } from 'playwright';
+import { Browser, chromium, Page } from 'playwright';
+
+/**
+ * En esta máquina no se puede abrir un navegador: falta el binario de Chromium de
+ * Playwright, falta `$DISPLAY` (Linux sin escritorio) o faltan sus librerías del
+ * sistema. Es un problema del ENTORNO, no de la Clave SOL ni de SUNAT, y por eso se
+ * distingue del resto de fallos del login: quien llama puede ofrecer el ingreso
+ * manual en vez de dar el flujo por perdido.
+ */
+export class NavegadorNoDisponibleError extends Error {
+  constructor(readonly detalle?: string) {
+    super('No se puede abrir un navegador en el servidor donde corre el sistema');
+  }
+}
 
 /**
  * Abre una sesión de SUNAT YA LOGUEADA en un Chromium visible
@@ -16,7 +29,10 @@ import { chromium, Page } from 'playwright';
  * ⚠️ El navegador se abre en la máquina donde corre este proceso Node — si
  * `erp-backend` corre en un servidor remoto sin pantalla, esta ventana nunca
  * la ve el usuario. Solo tiene sentido si el backend corre en la misma PC
- * desde la que se usa la app.
+ * desde la que se usa la app. En el hosting el `launch()` ni siquiera llega a
+ * abrir: no hay binario de Chromium ni `$DISPLAY`. Ese caso se avisa aparte, con
+ * `NavegadorNoDisponibleError`, para que quien llame ofrezca el ingreso manual
+ * en lugar de morir con un 500 mudo.
  *
  * A propósito NO se cierra el browser al terminar (el usuario lo sigue
  * usando) — solo se cierra si el login mismo falla, para no dejar procesos
@@ -25,6 +41,15 @@ import { chromium, Page } from 'playwright';
 @Injectable()
 export class SunatLoginClient {
   private readonly logger = new Logger(SunatLoginClient.name);
+
+  /**
+   * Una vez que `chromium.launch()` falló por entorno vuelve a fallar siempre: el
+   * binario no aparece solo ni brota un escritorio a mitad del día. Se recuerda para
+   * que el segundo clic no vuelva a pagar el intento (un par de segundos) y caiga
+   * derecho al ingreso manual. Se olvida al reiniciar el proceso, que es justo cuando
+   * podría haberse instalado Playwright.
+   */
+  private navegadorNoDisponible = false;
 
   private static readonly SELECTORES = {
     LOGIN_URL: 'https://www.sunat.gob.pe/sol.html',
@@ -100,11 +125,26 @@ export class SunatLoginClient {
     linkEntrada: string, nombrePortal: string,
   ): Promise<void> {
     const s = SunatLoginClient.SELECTORES;
-    const browser = await chromium.launch({
-      headless: false,
-      timeout: 30_000,
-      args: ['--start-maximized', '--window-position=0,0'],
-    });
+
+    if (this.navegadorNoDisponible) throw new NavegadorNoDisponibleError();
+
+    // El launch va FUERA del try de abajo a propósito: ese catch cierra el browser y
+    // habla de usuario/clave, y acá todavía no hay browser ni se llegó a SUNAT.
+    let browser: Browser;
+    try {
+      browser = await chromium.launch({
+        headless: false,
+        timeout: 30_000,
+        args: ['--start-maximized', '--window-position=0,0'],
+      });
+    } catch (error: any) {
+      this.navegadorNoDisponible = true;
+      this.logger.warn(
+        `No se puede abrir un navegador en esta máquina (${error?.message}). ` +
+        'Las acciones de SUNAT van a ofrecer ingreso manual.',
+      );
+      throw new NavegadorNoDisponibleError(error?.message);
+    }
     try {
       const context = await browser.newContext({
         userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',

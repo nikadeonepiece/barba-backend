@@ -23,6 +23,15 @@ export class SeguridadController {
     return { success: true, data: await this.seguridadService.getRoles() };
   }
 
+  // Estática y declarada antes de cualquier ruta con `:` bajo 'roles/': si mañana
+  // aparece un @Get('roles/:id'), 'detalle' entraría por ahí y el ParseIntPipe
+  // devolvería 400.
+  @RequirePermissions('SEGURIDAD', 'ver_seguridad')
+  @Get('roles/detalle')
+  async getRolesDetalle() {
+    return { success: true, data: await this.seguridadService.getRolesDetalle() };
+  }
+
   @RequirePermissions('SEGURIDAD', 'crear_seguridad')
   @Post('roles')
   async createRol(@Body() dto: CreateRolDto, @Req() req: any) {

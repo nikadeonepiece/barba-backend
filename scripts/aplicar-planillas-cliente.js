@@ -1,8 +1,8 @@
 /**
  * Aplica el módulo PLANILLAS CLIENTE sobre una base YA CARGADA.
  *
- * Existe porque `bd.sql` no se puede correr entero contra una base con datos: arranca
- * con `DROP DATABASE`. Este script hace lo que dice CLAUDE.md ("copiar de bd.sql el
+ * Existe porque `bd.sql` no se puede correr entero contra una base con datos: dropea
+ * cada tabla antes de crearla. Este script hace lo que dice CLAUDE.md ("copiar de bd.sql el
  * bloque de ese módulo y correr solo eso"), pero leyendo los fragmentos DEL PROPIO
  * bd.sql en vez de tener una copia acá — una copia se desincroniza en el primer cambio
  * y nadie se entera hasta que la base de producción queda distinta de la de desarrollo.

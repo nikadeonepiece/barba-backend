@@ -13,7 +13,7 @@
 // error de RED/timeout (no de credenciales), se detiene — señal probable de bloqueo.
 //
 // Todo se guarda SOLO en la tabla `empresa` (cifrado) — nunca en bd.sql, para que un
-// futuro `bd.sql` (que arranca con DROP DATABASE) no borre lo ya obtenido.
+// futuro `bd.sql` (que dropea y recrea cada tabla) no borre lo ya obtenido.
 
 require('dotenv').config();
 const mysql = require('mysql2/promise');

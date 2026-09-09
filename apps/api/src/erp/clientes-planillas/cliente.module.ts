@@ -4,6 +4,8 @@ import { PlanillasClienteModule } from './planillas/planillas-cliente.module';
 import { AsistenciaClienteModule } from './asistencia/asistencia.module';
 import { ModalidadPagoClienteModule } from './modalidad-pago/modalidad-pago.module';
 import { CajasClienteModule } from './cajas/cajas-cliente.module';
+import { TableroClienteModule } from './tablero/tablero-cliente.module';
+import { SireClienteModule } from './sire/sire-cliente.module';
 
 /**
  * Área CLIENTE — "Planillas Cliente", el portal que ve la empresa.
@@ -15,9 +17,11 @@ import { CajasClienteModule } from './cajas/cajas-cliente.module';
  *
  * ── Qué se puede escribir desde el portal (y qué no) ──
  *
- * El área NACIÓ de solo lectura y en su mayor parte lo sigue siendo: `personal` y
- * `planillas` no tienen un solo POST/PUT/DELETE, porque quien da de alta trabajadores,
- * carga contratos y calcula planillas es el estudio.
+ * El área NACIÓ de solo lectura y en su mayor parte lo sigue siendo: `personal`,
+ * `planillas`, `sire` y `tablero` no tienen un solo POST/PUT/DELETE, porque quien da de
+ * alta trabajadores, carga contratos, calcula planillas y baja los libros de SUNAT es el
+ * estudio. `tablero` además no puede tenerlos nunca: solo agrega lo que ya cargaron las
+ * otras pantallas.
  *
  * Las excepciones son `asistencia`, `modalidad-pago` y `cajas`, y son excepciones por
  * un motivo concreto: son datos que la empresa conoce de primera mano y el estudio no.
@@ -52,6 +56,8 @@ import { CajasClienteModule } from './cajas/cajas-cliente.module';
     AsistenciaClienteModule,
     ModalidadPagoClienteModule,
     CajasClienteModule,
+    TableroClienteModule,
+    SireClienteModule,
   ],
   exports: [
     PersonalClienteModule,
@@ -59,6 +65,8 @@ import { CajasClienteModule } from './cajas/cajas-cliente.module';
     AsistenciaClienteModule,
     ModalidadPagoClienteModule,
     CajasClienteModule,
+    TableroClienteModule,
+    SireClienteModule,
   ],
 })
 export class ClienteModule {}

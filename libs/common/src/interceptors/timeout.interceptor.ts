@@ -20,6 +20,12 @@ const RUTAS_LARGAS: Array<{ patron: RegExp; ms: number }> = [
   { patron: /\/vencimientos\/sincronizacion-sunat\//i, ms: 180_000 },
   { patron: /\/vencimientos\/sire\//i, ms: 180_000 },
   { patron: /\/vencimientos\/buzon-sunat\//i, ms: 180_000 },
+  // PLE: 10 minutos y no 3, por el mismo motivo que el T-Registro de abajo. SUNAT no
+  // acepta rangos mayores a un año en esta consulta, así que el historial completo son
+  // ~16 viajes seguidos DENTRO de una sola sesión de navegador. Cortar a los 3 minutos
+  // pega justo cuando el barrido va por la mitad: se gasta el login contra la cuenta
+  // real del cliente y no se guarda nada.
+  { patron: /\/vencimientos\/ple\//i, ms: 600_000 },
   // Casilla SUNAFIL: no hay API, se lee el portal con Playwright pasando por el
   // OAuth2 de SUNAT — un login completo más la carga de la bandeja no entra en 15s.
   { patron: /\/vencimientos\/sunafil\//i, ms: 180_000 },

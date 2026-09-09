@@ -1,61 +1,36 @@
 import { Injectable, NotFoundException, ConflictException, BadRequestException } from '@nestjs/common';
-import { DataSource, QueryRunner } from 'typeorm';
+import { DataSource } from 'typeorm';
 import { InjectDataSource } from '@nestjs/typeorm';
 import type { Response } from 'express';
 import { AuditoriaService, ExcelService, PdfService, pdfLayoutBordeado } from '@app/common';
 import { CajasArchivoService } from './cajas-archivo.service';
+// El saldo se calcula en UN solo lugar: la misma caja la mueven esta pantalla y el
+// portal del cliente, y dos implementaciones de "cuánto queda" es cómo aparecen dos
+// números distintos para la misma plata.
+import {
+  ORIGEN_APERTURA, CUENTA_PARA_SALDO, num, soles, fechaPe,
+  bloquearCaja, recalcularSaldos, validarConcepto,
+} from './cajas-saldos';
 import {
   CreateCajaDto, UpdateCajaDto, CreateMovimientoCajaDto, UpdateMovimientoCajaDto, AnularMovimientoCajaDto,
-  RevisarMovimientoCajaDto,
 } from './dto/caja.dto';
 
 const COLS_ORDER_ALLOWED = ['fecha_apertura', 'nombre', 'saldo_actual', 'razon_social'];
-
-/**
- * El movimiento que representa el fondo con el que se abrió la caja.
- *
- * No se edita ni se anula desde la pantalla de movimientos: es el reflejo de
- * `caja_chica.monto_inicial`, y tocarlo por un lado sin el otro descuadra el saldo.
- * Se corrige editando la cabecera de la caja (`update`), que actualiza los dos.
- */
-const ORIGEN_APERTURA = 'caja_chica_apertura';
-
-/**
- * Un movimiento solo es PLATA cuando está registrado Y aprobado.
- *
- * `estado` y `revision` responden dos preguntas distintas y por eso son dos columnas:
- * `estado` dice si el movimiento sigue vivo (un ANULADO no cuenta), `revision` dice si
- * el estudio ya lo validó (un gasto que cargó el cliente desde el portal nace
- * POR_REVISAR y no descuenta hasta que alguien lo mire). Esta condición es la única
- * definición de "cuenta para el saldo" en todo el módulo — si aparece escrita a mano en
- * otra query, es un lugar más donde el saldo puede empezar a diferir.
- */
-const CUENTA_PARA_SALDO = `estado = 'REGISTRADO' AND revision = 'APROBADO' AND estado_registro = 'ACTIVO'`;
 
 /**
  * Totales por caja, calculados desde el libro. No hace falta ninguna derivación
  * algebraica: como la apertura TAMBIÉN es un movimiento (tipo INGRESO), se cumple
  * `saldo_actual = total_ingresos - total_egresos` y las tres cifras que ve el usuario
  * salen de la misma fuente.
- *
- * `total_por_revisar` va aparte y NO entra en el saldo: es lo que el cliente ya cargó y
- * el estudio todavía no aprobó. Se muestra como aviso ("tenés 3 gastos esperando"),
- * porque si no fuera visible nadie los aprobaría nunca.
  */
 const SUBQUERY_TOTALES = `
   SELECT id_caja,
          SUM(CASE WHEN ${CUENTA_PARA_SALDO} AND tipo = 'INGRESO' THEN monto ELSE 0 END) AS total_ingresos,
          SUM(CASE WHEN ${CUENTA_PARA_SALDO} AND tipo = 'EGRESO'  THEN monto ELSE 0 END) AS total_egresos,
-         SUM(CASE WHEN estado = 'REGISTRADO' AND revision = 'POR_REVISAR' THEN monto ELSE 0 END) AS total_por_revisar,
-         SUM(CASE WHEN estado = 'REGISTRADO' AND revision = 'POR_REVISAR' THEN 1 ELSE 0 END) AS movimientos_por_revisar,
          SUM(CASE WHEN estado = 'REGISTRADO' THEN 1 ELSE 0 END) AS total_movimientos
   FROM caja_chica_movimiento
   WHERE estado_registro = 'ACTIVO'
   GROUP BY id_caja`;
-
-const num = (v: any) => Number(v ?? 0);
-const soles = (v: any) => `S/ ${num(v).toFixed(2)}`;
-const fechaPe = (v: any) => (v ? new Date(v).toLocaleDateString('es-PE') : '—');
 
 /**
  * El driver de MySQL devuelve `DECIMAL` y `COUNT` como STRING, no como número.
@@ -67,7 +42,6 @@ const fechaPe = (v: any) => (v ? new Date(v).toLocaleDateString('es-PE') : '—'
  */
 const CAMPOS_NUMERICOS = [
   'monto_inicial', 'saldo_actual', 'total_ingresos', 'total_egresos', 'total_movimientos',
-  'total_por_revisar', 'movimientos_por_revisar',
   'monto', 'saldo_anterior', 'saldo_posterior',
 ];
 
@@ -145,9 +119,7 @@ export class CajasService {
              e.razon_social, e.ruc,
              COALESCE(m.total_ingresos, 0)    AS total_ingresos,
              COALESCE(m.total_egresos, 0)     AS total_egresos,
-             COALESCE(m.total_movimientos, 0) AS total_movimientos,
-             COALESCE(m.total_por_revisar, 0) AS total_por_revisar,
-             COALESCE(m.movimientos_por_revisar, 0) AS movimientos_por_revisar
+             COALESCE(m.total_movimientos, 0) AS total_movimientos
       FROM caja_chica cc
       INNER JOIN empresa e ON e.id_empresa = cc.id_empresa
       LEFT JOIN (${SUBQUERY_TOTALES}) m ON m.id_caja = cc.id_caja
@@ -184,9 +156,7 @@ export class CajasService {
               SUM(CASE WHEN cc.estado = 'ABIERTA' THEN 1 ELSE 0 END) AS cajas_abiertas,
               COALESCE(SUM(cc.saldo_actual), 0)        AS total_saldo,
               COALESCE(SUM(m.total_ingresos), 0)       AS total_ingresos,
-              COALESCE(SUM(m.total_egresos), 0)        AS total_egresos,
-              COALESCE(SUM(m.total_por_revisar), 0)    AS total_por_revisar,
-              COALESCE(SUM(m.movimientos_por_revisar), 0) AS movimientos_por_revisar
+              COALESCE(SUM(m.total_egresos), 0)        AS total_egresos
        FROM caja_chica cc
        INNER JOIN empresa e ON e.id_empresa = cc.id_empresa
        LEFT JOIN (${SUBQUERY_TOTALES}) m ON m.id_caja = cc.id_caja
@@ -200,10 +170,6 @@ export class CajasService {
       total_ingresos: num(row?.total_ingresos),
       total_egresos: num(row?.total_egresos),
       total_saldo: num(row?.total_saldo),
-      // Lo que el cliente cargó y todavía nadie aprobó. No está en el saldo: es un
-      // aviso de trabajo pendiente, no plata.
-      total_por_revisar: num(row?.total_por_revisar),
-      movimientos_por_revisar: num(row?.movimientos_por_revisar),
     };
   }
 
@@ -244,9 +210,7 @@ export class CajasService {
               e.razon_social, e.ruc,
               COALESCE(m.total_ingresos, 0)    AS total_ingresos,
               COALESCE(m.total_egresos, 0)     AS total_egresos,
-              COALESCE(m.total_movimientos, 0) AS total_movimientos,
-              COALESCE(m.total_por_revisar, 0) AS total_por_revisar,
-              COALESCE(m.movimientos_por_revisar, 0) AS movimientos_por_revisar
+              COALESCE(m.total_movimientos, 0) AS total_movimientos
        FROM caja_chica cc
        INNER JOIN empresa e ON e.id_empresa = cc.id_empresa
        LEFT JOIN (${SUBQUERY_TOTALES}) m ON m.id_caja = cc.id_caja
@@ -342,7 +306,7 @@ export class CajasService {
     await qr.connect();
     await qr.startTransaction();
     try {
-      const caja = await this.bloquearCaja(qr, id, false);
+      const caja = await bloquearCaja(qr, id, false);
       if (caja.estado === 'CERRADA') {
         throw new BadRequestException(
           'Esta caja está cerrada y ya no se puede corregir. Si el fondo estaba mal, abre una caja nueva con el monto correcto.',
@@ -373,7 +337,7 @@ export class CajasService {
       // total: sin rearmar la cadena, la columna SALDO del estado de cuenta se queda
       // con los valores del monto viejo y la última fila deja de coincidir con el
       // saldo real de la caja.
-      const { saldo: saldoFinal, minimo, fechaMinimo } = await this.recalcularSaldos(qr, id, userId);
+      const { saldo: saldoFinal, minimo, fechaMinimo } = await recalcularSaldos(qr, id, userId);
 
       if (minimo < 0) {
         throw new BadRequestException(
@@ -505,12 +469,6 @@ export class CajasService {
     if (query.ocultarAnulados === 'true') {
       where.push("m.estado = 'REGISTRADO'");
     }
-    // La bandeja de revisión del estudio: los gastos que cargó el cliente y siguen
-    // esperando. Es el filtro que hace que el saldo "por revisar" sea accionable.
-    if (query.revision === 'APROBADO' || query.revision === 'POR_REVISAR' || query.revision === 'RECHAZADO') {
-      where.push('m.revision = ?');
-      params.push(query.revision);
-    }
 
     return { whereSql: where.join(' AND '), params };
   }
@@ -528,7 +486,6 @@ export class CajasService {
              m.saldo_anterior, m.saldo_posterior, m.descripcion,
              m.tipo_comprobante, m.nro_comprobante, m.ruta_comprobante, m.nombre_comprobante,
              m.tabla_origen, m.estado, m.motivo_anulacion,
-             m.revision, m.motivo_rechazo,
              m.id_caja_concepto, c.nombre AS nombre_concepto, c.codigo AS codigo_concepto,
              CONCAT_WS(' ', u.nombres, u.apellidos) AS usuario_registra,
              -- Quién lo cargó: un gasto que entró por el portal lo tipeó el cliente, no
@@ -564,14 +521,14 @@ export class CajasService {
    * queda rastro.
    */
   async createMovimiento(dto: CreateMovimientoCajaDto, userId: number) {
-    const idConcepto = await this.validarConcepto(dto.id_caja_concepto, dto.tipo);
+    const idConcepto = await validarConcepto(this.dataSource, dto.id_caja_concepto, dto.tipo);
     const monto = num(dto.monto);
 
     const qr = this.dataSource.createQueryRunner();
     await qr.connect();
     await qr.startTransaction();
     try {
-      const caja = await this.bloquearCaja(qr, dto.id_caja);
+      const caja = await bloquearCaja(qr, dto.id_caja);
       const saldoPrevio = num(caja.saldo_actual);
 
       const res: any = await qr.query(
@@ -595,7 +552,7 @@ export class CajasService {
       // `saldo_anterior`/`saldo_posterior` no se calculan en el INSERT: los pone el
       // recálculo, que es el único que conoce la posición real de este movimiento
       // dentro de la cadena una vez ordenada por fecha.
-      const { saldo: saldoFinal, minimo, fechaMinimo } = await this.recalcularSaldos(qr, dto.id_caja, userId);
+      const { saldo: saldoFinal, minimo, fechaMinimo } = await recalcularSaldos(qr, dto.id_caja, userId);
 
       if (minimo < 0) {
         throw new BadRequestException(
@@ -647,10 +604,10 @@ export class CajasService {
         throw new BadRequestException('Este movimiento está anulado. Registra uno nuevo en lugar de editarlo.');
       }
 
-      const caja = await this.bloquearCaja(qr, mov.id_caja);
+      const caja = await bloquearCaja(qr, mov.id_caja);
       const saldoPrevio = num(caja.saldo_actual);
 
-      const idConcepto = await this.validarConcepto(dto.id_caja_concepto, mov.tipo);
+      const idConcepto = await validarConcepto(this.dataSource, dto.id_caja_concepto, mov.tipo);
 
       // El comprobante nuevo reemplaza al anterior; si no se mandó ninguno, se
       // conserva el que ya estaba (editar el monto no debe borrar la boleta).
@@ -676,7 +633,7 @@ export class CajasService {
       // Cambiar la FECHA reordena la cadena, así que los saldos no se ajustan: se
       // rearman enteros. Es también lo que mantiene alineada la columna del estado de
       // cuenta cuando la corrección cae en medio de la historia.
-      const { saldo: saldoFinal, minimo, fechaMinimo } = await this.recalcularSaldos(qr, mov.id_caja, userId);
+      const { saldo: saldoFinal, minimo, fechaMinimo } = await recalcularSaldos(qr, mov.id_caja, userId);
 
       if (minimo < 0) {
         throw new BadRequestException(
@@ -729,7 +686,7 @@ export class CajasService {
       }
       if (mov.estado === 'ANULADO') throw new BadRequestException('Este movimiento ya está anulado');
 
-      await this.bloquearCaja(qr, mov.id_caja);
+      await bloquearCaja(qr, mov.id_caja);
 
       await qr.query(
         `UPDATE caja_chica_movimiento
@@ -740,7 +697,7 @@ export class CajasService {
 
       // Un ANULADO entra en la cadena con delta 0: la fila queda visible con su motivo,
       // pero deja de mover plata y todos los saldos posteriores se corren solos.
-      const { saldo: saldoFinal, minimo, fechaMinimo } = await this.recalcularSaldos(qr, mov.id_caja, userId);
+      const { saldo: saldoFinal, minimo, fechaMinimo } = await recalcularSaldos(qr, mov.id_caja, userId);
 
       if (minimo < 0) {
         throw new BadRequestException(
@@ -759,204 +716,6 @@ export class CajasService {
     } finally {
       await qr.release();
     }
-  }
-
-  /**
-   * Aprueba o rechaza un gasto que cargó el cliente desde el portal.
-   *
-   * Es el control que justifica que el portal pueda escribir montos: hasta que alguien
-   * del estudio pasa por acá, el gasto se ve pero no descuenta. Aprobar lo mete en la
-   * cadena de saldos; rechazar lo deja visible para el cliente con el motivo, que es lo
-   * que le dice qué corregir — por eso el motivo es obligatorio al rechazar.
-   *
-   * Solo se revisa lo que está POR_REVISAR: volver a tocar algo ya aprobado movería el
-   * saldo dos veces, y lo ya rechazado el cliente tiene que volver a cargarlo.
-   */
-  async revisarMovimiento(id: number, dto: RevisarMovimientoCajaDto, userId: number) {
-    const aprobar = dto.decision === 'APROBADO';
-
-    const qr = this.dataSource.createQueryRunner();
-    await qr.connect();
-    await qr.startTransaction();
-    try {
-      const [mov] = await qr.query(
-        `SELECT * FROM caja_chica_movimiento WHERE id_movimiento = ? AND estado_registro = 'ACTIVO'`,
-        [id],
-      );
-      if (!mov) throw new NotFoundException('Movimiento no encontrado');
-      if (mov.revision !== 'POR_REVISAR') {
-        throw new BadRequestException(
-          mov.revision === 'APROBADO'
-            ? 'Este movimiento ya está aprobado. Si estaba mal, anúlalo en vez de volver a revisarlo.'
-            : 'Este movimiento ya fue rechazado. El cliente tiene que cargarlo de nuevo con la corrección.',
-        );
-      }
-
-      await this.bloquearCaja(qr, mov.id_caja);
-
-      await qr.query(
-        `UPDATE caja_chica_movimiento
-         SET revision = ?, motivo_rechazo = ?, id_usuario_revisa = ?, id_usuario_mod = ?
-         WHERE id_movimiento = ? AND revision = 'POR_REVISAR' AND estado_registro = 'ACTIVO'`,
-        [dto.decision, aprobar ? null : dto.motivo!.trim(), userId, userId, id],
-      );
-
-      const { saldo: saldoFinal, minimo, fechaMinimo } = await this.recalcularSaldos(qr, mov.id_caja, userId);
-
-      // Solo al APROBAR puede quedar en rojo: rechazar nunca resta plata. El gasto se
-      // rechaza en los hechos, y el mensaje explica por qué no se pudo aprobar.
-      if (minimo < 0) {
-        throw new BadRequestException(
-          `Aprobar este gasto de ${soles(mov.monto)} deja la caja en ${soles(minimo)} al ${fechaPe(fechaMinimo)}: ` +
-            'en esa fecha no había ese saldo. Registra la reposición del fondo con su fecha real y volvé a aprobarlo.',
-        );
-      }
-
-      await this.auditoriaService.registrarConTransaccion(
-        qr, 'caja_chica_movimiento', id, 'ACTUALIZAR', userId, mov, { revision: dto.decision, motivo: dto.motivo ?? null },
-      );
-
-      await qr.commitTransaction();
-      return {
-        id,
-        saldo_actual: saldoFinal,
-        mensaje: aprobar ? 'Gasto aprobado: ya descuenta del saldo' : 'Gasto rechazado',
-      };
-    } catch (error) {
-      await qr.rollbackTransaction();
-      throw error;
-    } finally {
-      await qr.release();
-    }
-  }
-
-  /**
-   * Bloquea la caja para el resto de la transacción y valida que acepte cambios.
-   *
-   * El `FOR UPDATE` es lo que impide que dos gastos simultáneos lean el mismo saldo,
-   * los dos pasen la validación y la caja termine en negativo. El `disabled` del botón
-   * en el frontend no protege de esto (dos pestañas, dos usuarios, un reintento de red).
-   *
-   * Recibe el `QueryRunner` en vez de abrir uno propio: abrir una transacción dentro de
-   * otra deja la de afuera sin efecto sobre estas queries.
-   */
-  private async bloquearCaja(qr: QueryRunner, idCaja: number, exigirAbierta = true): Promise<any> {
-    const [caja] = await qr.query(
-      `SELECT * FROM caja_chica WHERE id_caja = ? AND estado_registro = 'ACTIVO' FOR UPDATE`,
-      [idCaja],
-    );
-    if (!caja) throw new NotFoundException('Caja no encontrada');
-    if (exigirAbierta && caja.estado === 'CERRADA') {
-      throw new BadRequestException(
-        'Esta caja está cerrada y ya no acepta cambios. Abre una caja nueva para el periodo siguiente.',
-      );
-    }
-    return caja;
-  }
-
-  /**
-   * Recalcula el saldo corrido de TODA la caja y lo baja a `caja_chica.saldo_actual`.
-   * Devuelve el saldo final y el punto MÁS BAJO de la cadena, con su fecha.
-   *
-   * Por qué recalcular en vez de sumar la diferencia, que es lo que hacía antes:
-   *
-   *   · Un movimiento se registra con la fecha que el usuario elige, y esa fecha puede
-   *     ser ANTERIOR a movimientos ya cargados (la boleta apareció una semana después).
-   *     Con ajustes incrementales, el `saldo_posterior` de las filas siguientes se
-   *     quedaba con el valor viejo y la columna SALDO del estado de cuenta dejaba de
-   *     cuadrar con el saldo real de la caja.
-   *   · Corregir el fondo de apertura tenía el mismo efecto sobre TODA la historia.
-   *
-   * Con esto, la columna que ve el contador es un saldo corrido de verdad y el saldo de
-   * la caja sale siempre de la misma fuente que el libro: no hay dos caminos para
-   * llegar al mismo número, que es como aparecen los descuadres.
-   *
-   * El costo es aceptable: una caja chica se mide en decenas de movimientos por mes, y
-   * la ventana la resuelve MySQL en una sola sentencia (nada de N updates en un loop).
-   * Los ANULADOS entran en la cadena con delta 0: siguen visibles, pero no mueven plata.
-   *
-   * Devuelve también el MÍNIMO porque validar solo el saldo final no alcanza: un fondo
-   * mal corregido, o un gasto cargado con fecha vieja, puede terminar en positivo y aun
-   * así dejar la caja en rojo en el medio — y una caja no pudo gastar plata que en ese
-   * momento no tenía. Quien llame valida `minimo` y deja que el rollback deshaga todo.
-   */
-  private async recalcularSaldos(
-    qr: QueryRunner, idCaja: number, userId: number,
-  ): Promise<{ saldo: number; minimo: number; fechaMinimo: string | null }> {
-    await qr.query(
-      `UPDATE caja_chica_movimiento m
-       INNER JOIN (
-         SELECT id_movimiento, delta,
-                SUM(delta) OVER (ORDER BY fecha, id_movimiento ROWS UNBOUNDED PRECEDING) AS posterior
-         FROM (
-           SELECT id_movimiento, fecha,
-                  CASE WHEN ${CUENTA_PARA_SALDO}
-                       THEN CASE WHEN tipo = 'INGRESO' THEN monto ELSE -monto END
-                       ELSE 0 END AS delta
-           FROM caja_chica_movimiento
-           WHERE id_caja = ? AND estado_registro = 'ACTIVO'
-         ) base
-       ) x ON x.id_movimiento = m.id_movimiento
-       SET m.saldo_anterior = x.posterior - x.delta,
-           m.saldo_posterior = x.posterior`,
-      [idCaja],
-    );
-
-    // El saldo de la caja es el último eslabón de esa cadena. `COALESCE` cubre la caja
-    // que se quedó sin ningún movimiento activo (no debería pasar, pero un 0 explícito
-    // es mejor que un NULL que después se lee como "sin datos").
-    const [fila] = await qr.query(
-      `SELECT COALESCE(SUM(CASE WHEN ${CUENTA_PARA_SALDO}
-                                THEN CASE WHEN tipo = 'INGRESO' THEN monto ELSE -monto END
-                                ELSE 0 END), 0) AS saldo
-       FROM caja_chica_movimiento
-       WHERE id_caja = ? AND estado_registro = 'ACTIVO'`,
-      [idCaja],
-    );
-    const saldo = num(fila?.saldo);
-
-    // El punto más bajo y CUÁNDO ocurre: sin la fecha, el mensaje de error obliga al
-    // usuario a revisar el libro entero para encontrar qué corregir.
-    const [bajo] = await qr.query(
-      `SELECT saldo_posterior, fecha FROM caja_chica_movimiento
-       WHERE id_caja = ? AND estado_registro = 'ACTIVO'
-       ORDER BY saldo_posterior ASC, fecha ASC
-       LIMIT 1`,
-      [idCaja],
-    );
-
-    await qr.query(`UPDATE caja_chica SET saldo_actual = ?, id_usuario_mod = ? WHERE id_caja = ?`, [saldo, userId, idCaja]);
-
-    return {
-      saldo,
-      minimo: bajo ? num(bajo.saldo_posterior) : saldo,
-      fechaMinimo: bajo?.fecha ?? null,
-    };
-  }
-
-  /**
-   * El concepto es opcional, pero si viene tiene que existir y servir para ese tipo de
-   * movimiento: un "Ajuste por arqueo" vale para los dos lados, "Movilidad" no es un
-   * ingreso. Sin esta validación se guardan gastos etiquetados como reposiciones y el
-   * reporte por concepto deja de significar algo.
-   */
-  private async validarConcepto(idConcepto: number | undefined, tipoMovimiento: string): Promise<number | null> {
-    if (!idConcepto) return null;
-
-    const [concepto] = await this.dataSource.query(
-      `SELECT id_caja_concepto, nombre, tipo FROM caja_chica_concepto
-       WHERE id_caja_concepto = ? AND estado_registro = 'ACTIVO'`,
-      [idConcepto],
-    );
-    if (!concepto) throw new BadRequestException('El concepto seleccionado no existe o fue dado de baja');
-
-    const esperado = tipoMovimiento === 'EGRESO' ? 'GASTO' : 'INGRESO';
-    if (concepto.tipo !== 'AMBOS' && concepto.tipo !== esperado) {
-      throw new BadRequestException(
-        `El concepto "${concepto.nombre}" es de tipo ${concepto.tipo} y no se puede usar en un ${tipoMovimiento.toLowerCase()}.`,
-      );
-    }
-    return Number(concepto.id_caja_concepto);
   }
 
   // ==========================================================

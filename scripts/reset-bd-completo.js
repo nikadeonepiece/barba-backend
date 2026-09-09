@@ -1,6 +1,6 @@
 /**
  * UN SOLO COMANDO para dejar la base de datos lista de punta a punta:
- *   1. Corre bd.sql completo (DROP + CREATE de ESTUDIOBARBA, todas las tablas,
+ *   1. Corre bd.sql completo (reconstruye todas las tablas, sus datos base,
  *      stored procedures, permisos y las 171 empresas base — sin credenciales).
  *   2. Corre migrar-credenciales-sunat.js (carga la Clave SOL de las 171
  *      empresas, cifrada con la CREDENCIALES_ENCRYPTION_KEY de este .env).
@@ -54,14 +54,17 @@ function correrBdSql(mysqlCli) {
   const sql = fs.readFileSync(bdSqlPath, 'utf8');
   const args = ['-h', process.env.DB_HOST || 'localhost', '-P', String(process.env.DB_PORT || 3306), '-u', process.env.DB_USER || 'root'];
   if (process.env.DB_PASSWORD) args.push(`-p${process.env.DB_PASSWORD}`);
-  // La base va EXPLÍCITA. Antes no se pasaba: el script dependía del `use
-  // estudiobarba;` de adentro de bd.sql, y por lo tanto del `drop database` que lo
-  // precede. Con esas 3 líneas comentadas (lo correcto: bd.sql no debe borrar
-  // bases) el script se quedaba sin base por defecto y fallaba.
+  // La base va EXPLÍCITA, y es la única forma: bd.sql ya no trae
+  // `drop database / create database / use estudiobarba` (se quitaron para que el
+  // mismo archivo corra en hosting, donde no hay permiso de CREATE/DROP DATABASE y
+  // el nombre de la base lo asigna el panel). O sea que si acá no se pasa la base,
+  // mysql se queda sin base por defecto y falla con "No database selected".
   //
-  // Además ese acoplamiento era la trampa: correr este script rehacía la base desde
-  // cero SIEMPRE, aunque bd.sql estuviera dañado. Pasó el 27/08/2026 a las 18:13 y
-  // se llevó las 171 empresas y las declaraciones cargadas.
+  // Ese acoplamiento viejo era además la trampa: correr este script rehacía la base
+  // desde cero SIEMPRE, aunque bd.sql estuviera dañado. Pasó el 27/08/2026 a las
+  // 18:13 y se llevó las 171 empresas y las declaraciones cargadas. Sigue siendo
+  // destructivo — bd.sql dropea cada tabla antes de crearla — pero ahora al menos
+  // borra solo la base que dice el .env, no una fija escrita adentro del SQL.
   const base = process.env.DB_DATABASE || process.env.DB_NAME;
   if (!base) throw new Error("Falta DB_DATABASE en el .env — sin eso no se sabe contra qué base correr.");
   args.push(base);

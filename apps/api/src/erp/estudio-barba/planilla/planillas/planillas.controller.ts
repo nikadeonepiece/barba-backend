@@ -1,8 +1,15 @@
-import { Controller, Get, Post, Patch, Delete, Body, Param, Query, ParseIntPipe, UseGuards, Req, Res } from '@nestjs/common';
+import {
+  Controller, Get, Post, Patch, Delete, Body, Param, Query, ParseIntPipe,
+  UseGuards, Req, Res, UseInterceptors, UploadedFile, BadRequestException,
+} from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import type { Response } from 'express';
 import { JwtAuthGuard, PermissionsGuard, RequirePermissions } from '@app/auth';
 import { PlanillasService } from './planillas.service';
-import { CreatePlanillaDto, CreateEntradaDatoDto, GuardarTareoDto } from './dto/planilla.dto';
+import { CONFIG_SUBIDA_BOLETA_FIRMADA } from './boletas-firmadas-archivo.service';
+import {
+  CreatePlanillaDto, CreateEntradaDatoDto, GuardarTareoDto, RegistrarBoletaFirmadaDto,
+} from './dto/planilla.dto';
 
 /**
  * Planilla mensual.
@@ -93,6 +100,74 @@ export class PlanillasController {
   @Get(':id/boleta/:idTrabajador')
   findBoleta(@Param('id', ParseIntPipe) id: number, @Param('idTrabajador', ParseIntPipe) idTrabajador: number) {
     return this.service.findBoleta(id, idTrabajador);
+  }
+
+  // ---------- Boletas firmadas (el cargo de entrega escaneado) ----------
+  // Todas cuelgan de `:id/firmadas`, así que tienen más segmentos que el `@Get(':id')`
+  // del final y no chocan con él. `firmadas/subir` va ANTES de `firmadas/:idTrabajador`
+  // o el `ParseIntPipe` intentaría leer "subir" como id y respondería 400.
+
+  /**
+   * Paso 1 de la carga: sube el PDF y devuelve su ruta relativa. NO registra nada.
+   *
+   * Se separa del `POST :id/firmadas` (paso 2) para que los datos pasen por un DTO que
+   * valide de verdad: en `multipart/form-data` todo llega como string y `@IsInt()` /
+   * `@IsDateString()` dejarían de servir. Mismo trato que `contratos/subir`.
+   *
+   * Contrapartida asumida: si el usuario sube el archivo y cierra el modal sin
+   * guardar, queda un PDF huérfano en `storage-privado/boletas-firmadas`.
+   */
+  @RequirePermissions('PLANILLA', 'subir_boleta_firmada')
+  @Post(':id/firmadas/subir')
+  @UseInterceptors(FileInterceptor('archivo', CONFIG_SUBIDA_BOLETA_FIRMADA))
+  subirFirmada(@UploadedFile() archivo: Express.Multer.File) {
+    if (!archivo) throw new BadRequestException('No se recibió ningún archivo');
+    return {
+      ruta: `/boletas-firmadas/${archivo.filename}`,
+      nombre: archivo.originalname,
+      tamano: archivo.size,
+    };
+  }
+
+  @RequirePermissions('PLANILLA', 'ver_boleta_firmada')
+  @Get(':id/firmadas')
+  findFirmadas(@Param('id', ParseIntPipe) id: number) {
+    return this.service.findFirmadas(id);
+  }
+
+  @RequirePermissions('PLANILLA', 'subir_boleta_firmada')
+  @Post(':id/firmadas')
+  registrarFirmada(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: RegistrarBoletaFirmadaDto,
+    @Req() req: any,
+  ) {
+    return this.service.registrarFirmada(id, dto, req.user.userId);
+  }
+
+  /**
+   * `@Res()` SIN `passthrough`: con `passthrough: true` el `TransformInterceptor`
+   * seguiría aplicándose y envolvería el binario del PDF dentro del JSON
+   * `{ success, data }`, rompiendo la descarga (mismo motivo que en contratos).
+   */
+  @RequirePermissions('PLANILLA', 'ver_boleta_firmada')
+  @Get(':id/firmadas/:idTrabajador/archivo')
+  async descargarFirmada(
+    @Param('id', ParseIntPipe) id: number,
+    @Param('idTrabajador', ParseIntPipe) idTrabajador: number,
+    @Res() res: Response,
+  ) {
+    await this.service.descargarFirmada(id, idTrabajador, res);
+  }
+
+  @RequirePermissions('PLANILLA', 'eliminar_boleta_firmada')
+  @Delete(':id/firmadas/:idTrabajador')
+  eliminarFirmada(
+    @Param('id', ParseIntPipe) id: number,
+    @Param('idTrabajador', ParseIntPipe) idTrabajador: number,
+    @Req() req: any,
+  ) {
+    return this.service.eliminarFirmada(id, idTrabajador, req.user.userId);
   }
 
   @RequirePermissions('PLANILLA', 'ver_planilla')

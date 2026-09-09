@@ -9,7 +9,6 @@ import { CajasService } from './cajas.service';
 import { CONFIG_SUBIDA_COMPROBANTE } from './cajas-archivo.service';
 import {
   CreateCajaDto, UpdateCajaDto, CreateMovimientoCajaDto, UpdateMovimientoCajaDto, AnularMovimientoCajaDto,
-  RevisarMovimientoCajaDto,
 } from './dto/caja.dto';
 
 /**
@@ -110,19 +109,6 @@ export class CajasController {
   @Get('movimientos/:id/comprobante')
   async descargarComprobante(@Param('id', ParseIntPipe) id: number, @Res() res: Response) {
     await this.service.descargarComprobante(id, res);
-  }
-
-  /**
-   * Aprobar o rechazar un gasto que cargó el cliente desde el portal.
-   *
-   * Permiso propio (`revisar_movimiento_caja`) y no `editar_movimiento_caja`: revisar es
-   * el control sobre lo que el cliente escribe, y el estudio puede querer que lo haga
-   * solo el contador a cargo aunque varios puedan registrar gastos.
-   */
-  @RequirePermissions('TESORERIA', 'revisar_movimiento_caja')
-  @Patch('movimientos/:id/revisar')
-  revisarMovimiento(@Param('id', ParseIntPipe) id: number, @Body() dto: RevisarMovimientoCajaDto, @Req() req: any) {
-    return this.service.revisarMovimiento(id, dto, req.user.userId);
   }
 
   @RequirePermissions('TESORERIA', 'anular_movimiento_caja')

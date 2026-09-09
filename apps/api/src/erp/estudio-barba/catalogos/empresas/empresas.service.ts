@@ -6,7 +6,7 @@ import * as bcrypt from 'bcrypt';
 import { CreateEmpresaDto, UpdateEmpresaDto, CreateUsuarioPortalDto, UpdateUsuarioPortalDto } from './dto/empresa.dto';
 import { CredencialesCryptoService } from '@app/security';
 import { GuardarCredencialesDto } from './dto/empresa.dto';
-import { SunatLoginClient } from './sunat-login.client';
+import { NavegadorNoDisponibleError, SunatLoginClient } from './sunat-login.client';
 import { EmpresaLogoService } from './empresa-logo.service';
 
 @Injectable()
@@ -181,12 +181,21 @@ export class EmpresasService {
    * y Pagos" de SUNAT con la Clave SOL guardada — para uso manual del usuario a
    * partir de ahí. Solo tiene efecto visible si erp-backend corre en la misma
    * PC desde la que se usa la app (ver advertencia en sunat-login.client.ts).
+   *
+   * Cuando el backend vive en el hosting eso es imposible, así que en vez de fallar
+   * devuelve `modo: 'MANUAL'` con lo necesario para entrar a mano — ver `ingresoManual`.
    */
   async abrirMisDeclaraciones(id: number, userId: number) {
-    const { ruc, razonSocial, solUsuario, solPassword } = await this.credencialesSolParaLogin(id);
+    const credenciales = await this.credencialesSolParaLogin(id);
+    const { ruc, razonSocial, solUsuario, solPassword } = credenciales;
     await this.auditoriaService.registrar('empresa', id, 'ACTUALIZAR', userId, null, { accion: 'abrir_mis_declaraciones_sunat' });
-    await this.sunatLoginClient.abrirSesionMisDeclaraciones(ruc, solUsuario, solPassword);
-    return { success: true, message: `Sesión abierta en SUNAT para ${razonSocial}` };
+    try {
+      await this.sunatLoginClient.abrirSesionMisDeclaraciones(ruc, solUsuario, solPassword);
+    } catch (error) {
+      if (error instanceof NavegadorNoDisponibleError) return this.ingresoManual(credenciales, 'Mis Declaraciones y Pagos');
+      throw error;
+    }
+    return { success: true, modo: 'AUTOMATICO', message: `Sesión abierta en SUNAT para ${razonSocial}` };
   }
 
   /**
@@ -195,10 +204,47 @@ export class EmpresasService {
    * a otra una vez adentro — por eso son dos acciones separadas y no una sola.
    */
   async abrirTramitesConsultas(id: number, userId: number) {
-    const { ruc, razonSocial, solUsuario, solPassword } = await this.credencialesSolParaLogin(id);
+    const credenciales = await this.credencialesSolParaLogin(id);
+    const { ruc, razonSocial, solUsuario, solPassword } = credenciales;
     await this.auditoriaService.registrar('empresa', id, 'ACTUALIZAR', userId, null, { accion: 'abrir_tramites_consultas_sunat' });
-    await this.sunatLoginClient.abrirSesionTramitesConsultas(ruc, solUsuario, solPassword);
-    return { success: true, message: `Sesión abierta en SUNAT para ${razonSocial}` };
+    try {
+      await this.sunatLoginClient.abrirSesionTramitesConsultas(ruc, solUsuario, solPassword);
+    } catch (error) {
+      if (error instanceof NavegadorNoDisponibleError) return this.ingresoManual(credenciales, 'Mis trámites y consultas');
+      throw error;
+    }
+    return { success: true, modo: 'AUTOMATICO', message: `Sesión abierta en SUNAT para ${razonSocial}` };
+  }
+
+  /**
+   * Plan B cuando el backend no puede abrir un navegador (corre en el hosting, sin
+   * pantalla): en lugar de un error, se le devuelve al front lo justo para que el
+   * usuario entre a SUNAT desde SU propio navegador y pegue los datos.
+   *
+   * No hay fuga de información: la Clave SOL descifrada ya se entrega tal cual en
+   * `obtenerCredenciales`, y ambos endpoints exigen el MISMO permiso
+   * (`ver_credenciales_sunat`). Quien puede pulsar este botón ya podía leer la clave
+   * desde el modal de credenciales.
+   *
+   * Se responde 200 y no un 4xx/5xx a propósito: para el usuario esto no es un fallo,
+   * es la otra mitad de la misma acción, y un status de error dispararía el toast rojo
+   * del errorInterceptor del front encima del modal.
+   */
+  private ingresoManual(
+    credenciales: { ruc: string; razonSocial: string; solUsuario: string; solPassword: string },
+    puerta: string,
+  ) {
+    return {
+      success: true,
+      modo: 'MANUAL',
+      puerta,
+      url: 'https://www.sunat.gob.pe/sol.html',
+      ruc: credenciales.ruc,
+      razon_social: credenciales.razonSocial,
+      usuario: credenciales.solUsuario,
+      clave: credenciales.solPassword,
+      message: 'El sistema no puede abrir el navegador desde el servidor: entrá a SUNAT con estos datos.',
+    };
   }
 
   /**
@@ -239,11 +285,17 @@ export class EmpresasService {
   // (`resolverEmpresaDelUsuario`), así que aceptarlo del cliente sería regalar acceso
   // a la planilla de cualquier otra empresa.
 
-  private static readonly MODULO_PORTAL = 'PLANILLAS_CLIENTE';
+  /**
+   * Módulos en los que vive el portal del cliente. Todo módulo nuevo del área CLIENTE
+   * tiene que sumarse acá: el filtro de `rolesPortal` exige que TODOS los permisos del
+   * rol caigan dentro de esta lista, así que uno que falte deja al rol CLIENTE fuera
+   * del selector y bloquea la creación de cuentas de portal.
+   */
+  private static readonly MODULOS_PORTAL = ['PLANILLAS_CLIENTE', 'CAJAS_CLIENTE', 'SIRE_CLIENTE'];
 
   /**
-   * Roles asignables a una cuenta de portal: los que tienen permisos DENTRO de
-   * `PLANILLAS_CLIENTE` y ninguno fuera de ahí (hoy, el rol `CLIENTE`).
+   * Roles asignables a una cuenta de portal: los que tienen permisos DENTRO de los
+   * módulos del portal (`MODULOS_PORTAL`) y ninguno fuera de ahí (hoy, el rol `CLIENTE`).
    *
    * Se calcula desde `sis_permiso` en vez de hardcodear `'CLIENTE'` para que un rol de
    * portal nuevo aparezca solo, sin desplegar. Y se valida también en el backend
@@ -255,6 +307,8 @@ export class EmpresasService {
    * permisos — de ahí la exclusión a mano.
    */
   async rolesPortal() {
+    const modulos = EmpresasService.MODULOS_PORTAL;
+    const lista = modulos.map(() => '?').join(', ');
     const data = await this.dataSource.query(
       `SELECT r.id_rol, r.nombre, r.descripcion
          FROM sis_rol r
@@ -265,15 +319,15 @@ export class EmpresasService {
                   INNER JOIN sis_accion a ON a.id_accion = p.id_accion
                   INNER JOIN sis_modulo m ON m.id_modulo = a.id_modulo
                  WHERE p.id_rol = r.id_rol AND p.estado_registro = 'ACTIVO'
-                   AND a.estado_registro = 'ACTIVO' AND m.nombre = ?)
+                   AND a.estado_registro = 'ACTIVO' AND m.nombre IN (${lista}))
           AND NOT EXISTS (
                 SELECT 1 FROM sis_permiso p
                   INNER JOIN sis_accion a ON a.id_accion = p.id_accion
                   INNER JOIN sis_modulo m ON m.id_modulo = a.id_modulo
                  WHERE p.id_rol = r.id_rol AND p.estado_registro = 'ACTIVO'
-                   AND a.estado_registro = 'ACTIVO' AND m.nombre <> ?)
+                   AND a.estado_registro = 'ACTIVO' AND m.nombre NOT IN (${lista}))
         ORDER BY r.nombre ASC`,
-      [EmpresasService.MODULO_PORTAL, EmpresasService.MODULO_PORTAL],
+      [...modulos, ...modulos],
     );
     return { success: true, data };
   }
@@ -282,7 +336,7 @@ export class EmpresasService {
     const { data } = await this.rolesPortal();
     if (!data.some((r: any) => Number(r.id_rol) === Number(idRol))) {
       throw new BadRequestException(
-        'Ese rol no sirve para una cuenta de portal. Solo se permite un rol cuyos permisos estén TODOS dentro de "Planillas Cliente" (hoy, el rol CLIENTE). Si hace falta otro, se crea desde Permisos usando únicamente acciones de ese módulo.',
+        'Ese rol no sirve para una cuenta de portal. Solo se permite un rol cuyos permisos estén TODOS dentro de los módulos del portal ("Planillas Cliente", "Cajas Cliente" y "SIRE Cliente") — hoy, el rol CLIENTE. Si hace falta otro, se crea desde Permisos usando únicamente acciones de esos módulos.',
       );
     }
   }

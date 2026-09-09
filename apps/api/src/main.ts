@@ -31,17 +31,32 @@ async function bootstrap() {
     crossOriginResourcePolicy: { policy: "cross-origin" }
   }));
 
-  // ✅ CORS configurado y seguro para producción y tu frontend local
+  // ✅ CORS configurado y seguro para producción y tu frontend local.
+  // Orígenes de producción: lista cerrada, sin comodines. Van el http:// y el https://
+  // del dominio a propósito: el environment.ts de prod apunta a HTTPS y sin ese origen
+  // el navegador bloquea todas las llamadas al API si no se sirve same-origin.
+  const origenesProduccion = [
+    'http://localhost:62452',
+    'http://barba.difusioneslaborales.com',
+    'https://barba.difusioneslaborales.com',
+    'https://www.barba.difusioneslaborales.com',
+  ];
+
+  // En desarrollo se acepta cualquier puerto de localhost. Motivo: si queda un `ng serve`
+  // pegado en el 4200, Angular arranca el siguiente en un puerto aleatorio (59786, 57035…)
+  // y con la lista fija el login moría por CORS sin motivo aparente. Fuera de desarrollo
+  // (NODE_ENV=production) esta excepción no aplica y solo pasan los orígenes de arriba.
+  const esLocalhostDev = (origen: string) =>
+    process.env.NODE_ENV !== 'production' &&
+    /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origen);
+
   app.enableCors({
-    origin: [
-      'http://localhost:4200',
-      'http://localhost:57035',
-      'http://barba.difusioneslaborales.com',
-      // El frontend de producción (environment.ts) apunta a HTTPS — sin este origen
-      // el navegador bloquea por CORS toda llamada al API si no se sirve same-origin.
-      'https://barba.difusioneslaborales.com',
-      'https://www.barba.difusioneslaborales.com'
-    ],
+    origin: (origen: string | undefined, callback: (err: Error | null, permitido?: boolean) => void) => {
+      // Sin cabecera Origin (Postman, curl, la app Flutter, same-origin) no hay nada que validar.
+      if (!origen) return callback(null, true);
+      if (origenesProduccion.includes(origen) || esLocalhostDev(origen)) return callback(null, true);
+      return callback(new Error(`Origen no permitido por CORS: ${origen}`), false);
+    },
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
     credentials: true
   });

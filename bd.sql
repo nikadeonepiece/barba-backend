@@ -18,45 +18,57 @@
 -- habría revertido el manejo de AFP_NET en declaracion_listar_periodo y la preservación de
 -- estado_pago = PAGADO en declaracion_marcar_error.
 --
--- Para aplicar un módulo sobre una base YA cargada, copiar de acá el bloque de ese
--- módulo y correr solo eso. NUNCA correr bd.sql completo en producción: hace DROP
--- TABLE y perdería los datos ya cargados.
 -- ------------------------------------------------------------------------------
--- Este script NO crea la base de datos (hosting compartido no da permiso CREATE/DROP DATABASE
--- al usuario de la cuenta) — se ejecuta contra una base ya creada y seleccionada:
---   Local:   mysql -u root -p ESTUDIOBARBA < bd.sql   (crear antes con CREATE DATABASE IF NOT EXISTS ESTUDIOBARBA DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;)
---   Hosting: crear la base desde el panel (cPanel/Plesk) con el nombre real que asigne (ej. difusion_estudiobarba)
---            y luego: mysql -u difusion -p difusion_estudiobarba < bd.sql
--- ⚠️ RESET DESTRUCTIVO — ACTIVO A PROPÓSITO (decisión del 27/08/2026, en desarrollo).
+-- CÓMO SE CORRE — el mismo archivo sirve en local y en hosting
+-- ------------------------------------------------------------------------------
+-- Este script NO crea, NO borra y NO selecciona la base de datos: trabaja sobre la
+-- base que ya viene seleccionada por quien lo lanza. Antes traía
+-- `drop database estudiobarba / create database / use estudiobarba` y eso lo dejaba
+-- inservible fuera de local por dos razones: en hosting compartido el usuario de la
+-- cuenta no tiene permiso de CREATE/DROP DATABASE, y el nombre real de la base lo
+-- asigna el panel (ej. difusion_estudiobarba), no lo elegimos nosotros.
 --
--- En desarrollo conviene: rehacer la base entera es más rápido que ir guardando un
--- ALTER TABLE por cada cambio de esquema. Se dejan activas a sabiendas.
+--   Local:    crear la base una sola vez, y después correr el archivo contra ella
+--             CREATE DATABASE IF NOT EXISTS estudiobarba DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+--             mysql -u root -p estudiobarba < bd.sql
+--             (más corto: node scripts/reset-bd-completo.js — toma DB_DATABASE del .env)
 --
--- ⚠️ PERO OJO CON LA TRAMPA, que ya mordió dos veces:
--- el `use` de acá abajo PISA la base que se pasa por línea de comandos. O sea que
---     mysql -u root cualquier_base_de_prueba < bd.sql
--- NO corre contra `cualquier_base_de_prueba`: borra y reconstruye ESTUDIOBARBA.
--- Para probar bd.sql de forma REALMENTE aislada hay que filtrar estas 3 líneas:
---     sed -E 's/^[[:space:]]*(drop database|create database|use )/-- &/I' bd.sql > /tmp/prueba.sql
+--   Hosting:  crear la base desde el panel (cPanel/Plesk) con el nombre que asigne, y
+--             mysql -u difusion -p difusion_estudiobarba < bd.sql
+--             Por phpMyAdmin: PRIMERO seleccionar la base en el panel izquierdo y
+--             recién ahí usar Importar (o pegar en la pestaña SQL). Si se importa sin
+--             base seleccionada, MySQL responde "No database selected".
+-- ------------------------------------------------------------------------------
+-- RE-EJECUTABLE, PERO DESTRUCTIVO — las dos cosas a la vez, a propósito
+-- ------------------------------------------------------------------------------
+-- RE-EJECUTABLE: cada tabla lleva su `DROP TABLE IF EXISTS` delante y cada
+-- procedimiento su `DROP PROCEDURE IF EXISTS`. Correrlo dos veces seguidas da
+-- exactamente el mismo resultado y ya no revienta con "#1050 - la tabla ya existe"
+-- (que es lo que pasaba en hosting: allá no corría el `drop database` que en local
+-- limpiaba todo antes, así que la segunda pasada chocaba con las tablas del módulo
+-- de planilla, las únicas que no traían su DROP).
 --
--- Pasó el 26/08/2026 en una prueba que se creía aislada, y otra vez el 27/08/2026 a
--- las 18:13 vía `node scripts/reset-bd-completo.js`: se llevó las 171 empresas y las
--- declaraciones porque bd.sql estaba dañado en ese momento. Rehace SIEMPRE, sin
--- preguntar y sin mirar si el archivo está sano.
+-- DESTRUCTIVO: volver a correrlo BORRA LOS DATOS. No es un parche incremental, es
+-- una reconstrucción completa del esquema. En desarrollo conviene — rehacer la base
+-- entera es más rápido que ir guardando un ALTER TABLE por cada cambio.
 --
--- ANTES DE CORRER ESTO, dos cosas:
+-- Para aplicar UN módulo sobre una base ya cargada, copiar de acá SOLO el bloque de
+-- ese módulo y correr eso. NUNCA correr bd.sql completo sobre datos vivos.
+--
+-- ANTES DE CORRERLO, dos cosas:
 --   1. Que bd.sql esté sano (que traiga las 171 empresas y el cronograma).
 --   2. Que no haya datos operativos en la base que no estén en este archivo
 --      (declaraciones, descargas SIRE, buzón) — eso no se recupera de acá.
 --
--- Para PRODUCCIÓN hay que comentarlas: en hosting compartido ni siquiera hay permiso
--- para DROP/CREATE DATABASE, y contradicen al comentario de arriba ("no crea la base").
+-- Ya mordió dos veces: el 26/08/2026 en una prueba que se creía aislada, y el
+-- 27/08/2026 a las 18:13 vía `node scripts/reset-bd-completo.js` — se llevó las 171
+-- empresas y las declaraciones. Rehace SIEMPRE, sin preguntar.
 --
 -- El camino completo (base + credenciales SUNAT cifradas, que bd.sql no trae):
 --     node scripts/reset-bd-completo.js
-
-drop database estudiobarba ;
-create database estudiobarba ;
+-- ------------------------------------------------------------------------------
+drop database estudiobarba;
+create database estudiobarba;
 use estudiobarba;
 
 /*!40101 SET @OLD_CHARACTER_SET_CLIENT=@@CHARACTER_SET_CLIENT */;
@@ -69,6 +81,13 @@ use estudiobarba;
 /*!40014 SET @OLD_FOREIGN_KEY_CHECKS=@@FOREIGN_KEY_CHECKS, FOREIGN_KEY_CHECKS=0 */;
 /*!40101 SET @OLD_SQL_MODE=@@SQL_MODE, SQL_MODE='NO_AUTO_VALUE_ON_ZERO' */;
 /*!40111 SET @OLD_SQL_NOTES=@@SQL_NOTES, SQL_NOTES=0 */;
+
+-- Las FK se apagan mientras se reconstruye el esquema: así el orden de los DROP y
+-- de los CREATE no importa (planilla_detalle apunta a planilla_planilla, tesoreria a
+-- planilla_banco, etc.). Va como sentencia normal y no solo dentro de un /*!40014 */
+-- para que también valga cuando se pega SOLO un módulo en phpMyAdmin. Se vuelven a
+-- encender al final del archivo.
+SET FOREIGN_KEY_CHECKS = 0;
 
 -- ==============================================================================
 -- ESTRUCTURA (tablas + stored procedures)
@@ -393,6 +412,44 @@ DELIMITER ;;
 CREATE PROCEDURE `sis_rol_listar`()
 BEGIN
     SELECT id_rol, nombre, descripcion FROM sis_rol WHERE estado_registro = 'ACTIVO' ORDER BY id_rol ASC;
+END ;;
+DELIMITER ;
+/*!50003 SET sql_mode              = @saved_sql_mode */ ;
+/*!50003 SET character_set_client  = @saved_cs_client */ ;
+/*!50003 SET character_set_results = @saved_cs_results */ ;
+/*!50003 SET collation_connection  = @saved_col_connection */ ;
+/*!50003 DROP PROCEDURE IF EXISTS `sis_rol_listar_detalle` */;
+/*!50003 SET @saved_cs_client      = @@character_set_client */ ;
+/*!50003 SET @saved_cs_results     = @@character_set_results */ ;
+/*!50003 SET @saved_col_connection = @@collation_connection */ ;
+/*!50003 SET character_set_client  = utf8mb4 */ ;
+/*!50003 SET character_set_results = utf8mb4 */ ;
+/*!50003 SET collation_connection  = utf8mb4_unicode_ci */ ;
+/*!50003 SET @saved_sql_mode       = @@sql_mode */ ;
+/*!50003 SET sql_mode              = 'ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION' */ ;
+DELIMITER ;;
+-- Lo mismo que sis_rol_listar pero con los dos contadores que la pantalla de ROLES
+-- necesita mostrar. Va aparte y no ampliando sis_rol_listar porque ese lo consumen
+-- los combos de Usuarios y de Permisos, donde las subconsultas son puro peso muerto.
+--
+-- total_usuarios cuenta SOLO usuarios ACTIVOS a proposito: es exactamente la
+-- condicion que evalua sis_rol_eliminar para bloquear la baja. Contando tambien los
+-- BLOQUEADOS la pantalla diria "1 usuario" y el borrado igual pasaria, que es la
+-- clase de incoherencia que hace desconfiar del numero.
+CREATE PROCEDURE `sis_rol_listar_detalle`()
+BEGIN
+    SELECT r.id_rol,
+           r.nombre,
+           r.descripcion,
+           (SELECT COUNT(*) FROM sis_usuario u
+             WHERE u.id_rol = r.id_rol AND u.estado_registro = 'ACTIVO') AS total_usuarios,
+           (SELECT COUNT(*) FROM sis_permiso p
+              INNER JOIN sis_accion a ON a.id_accion = p.id_accion
+             WHERE p.id_rol = r.id_rol AND p.estado_registro = 'ACTIVO'
+               AND a.estado_registro = 'ACTIVO') AS total_permisos
+      FROM sis_rol r
+     WHERE r.estado_registro = 'ACTIVO'
+     ORDER BY r.id_rol ASC;
 END ;;
 DELIMITER ;
 /*!50003 SET sql_mode              = @saved_sql_mode */ ;
@@ -1267,6 +1324,113 @@ INSERT INTO `sis_permiso` (`id_rol`, `id_accion`, `estado_registro`)
 SELECT 1, id_accion, 'ACTIVO' FROM sis_accion
 WHERE id_modulo = @id_modulo_vencimientos_sire AND codigo_accion IN ('usar_sire', 'ver_sire_descarga', 'generar_sire_descarga');
 
+-- ---------- PLE (Programa de Libros Electrónicos) — los periodos ANTERIORES a SIRE ----------
+-- SIRE no reemplazó al PLE: lo sucedió, y solo para ventas y compras. Los periodos
+-- viejos de cada empresa siguen viviendo en PLE y la API de SIRE devuelve vacío para
+-- ellos. Verificado con datos reales (RUC 20539814452, 08/09/2026): 156 libros entre
+-- 2017 y 2023-09, y NADA desde 2023-10 en adelante — ahí esa empresa pasó a SIRE.
+--
+-- DIFERENCIA DE FONDO con SIRE, y la razón de que esta tabla exista aparte de
+-- `sire_descarga`: en PLE el contribuyente generaba el TXT con su propio sistema y a
+-- SUNAT solo le enviaba un RESUMEN (hash). SUNAT nunca tuvo las líneas del libro, solo
+-- la Constancia de Recepción. Por eso acá no hay ticket, ni ZIP, ni detalle de
+-- comprobantes: hay un acuse en PDF y sus metadatos. Meter esto en `sire_descarga`
+-- (que está diseñada alrededor del ticket) dejaría media tabla en NULL.
+DROP TABLE IF EXISTS `ple_libro_presentado`;
+CREATE TABLE `ple_libro_presentado` (
+  `id_ple` int NOT NULL AUTO_INCREMENT,
+  `id_empresa` int NOT NULL COMMENT 'Empresa cliente dueña de este libro',
+  `periodo` varchar(6) NOT NULL COMMENT 'AAAAMM — armado de perAnioPreslib + perMesPreslib',
+  `cod_libro` varchar(6) NOT NULL COMMENT 'Código SUNAT: 080000 = Registro de Compras, 140000 = Registro de Ventas e Ingresos',
+  `desc_libro` varchar(120) NOT NULL COMMENT 'codDescLibro tal cual lo manda SUNAT, ej "140000 - REGISTRO DE VENTAS E INGRESOS"',
+  -- Equivalencia con el vocabulario de SIRE para poder mostrar PLE y SIRE en UNA sola
+  -- grilla: 080000 (compras) es el mismo registro que hoy llega como RCE, y 140000
+  -- (ventas) el que llega como RVIE. Va NULL en cualquier otro libro (diario, mayor,
+  -- activos fijos), que no tiene equivalente en SIRE porque SIRE nunca los cubrió.
+  `tipo_libro` enum('RVIE','RCE') DEFAULT NULL COMMENT 'Equivalencia SIRE del cod_libro, para la grilla unificada. NULL si el libro no existe en SIRE',
+  `fecha_presentacion` datetime NOT NULL COMMENT 'fecPresentacion: cuándo se envió a SUNAT (no el periodo declarado)',
+  `fuera_de_plazo` tinyint(1) NOT NULL DEFAULT 0 COMMENT 'indAtraso de SUNAT: 1 = fuera de plazo, 0 = dentro. Alimenta el semáforo de cumplimiento histórico',
+  -- Par que identifica la constancia y ÚNICO dato con el que se puede volver a pedir el
+  -- PDF: generarConstanciaRecepcion?numArchivoRes=..&annArchivoRes=.. — sin los dos, el
+  -- acuse es irrecuperable.
+  `num_archivo_res` varchar(20) NOT NULL,
+  `ann_archivo_res` varchar(4) NOT NULL,
+  `cod_oportunidad` varchar(4) DEFAULT NULL COMMENT 'codOportunidad: motivo del envío (ej "00" = cierre del libro)',
+  `ind_operacion` varchar(2) DEFAULT NULL,
+  `ind_moneda` varchar(2) DEFAULT NULL,
+  `ind_simplificado` varchar(2) DEFAULT NULL,
+  `constancia_ruta` varchar(255) DEFAULT NULL COMMENT 'Relativa a storage-privado/ (NUNCA uploads/: el acuse lleva RUC y razón social). NULL hasta que alguien la pide por primera vez',
+  `respuesta_cruda_json` json DEFAULT NULL COMMENT 'La fila tal cual la devolvió SUNAT, por si aparecen campos nuevos',
+  `fecha_sincronizacion` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
+  `estado_registro` enum('ACTIVO','ELIMINADO') NOT NULL DEFAULT 'ACTIVO',
+  `id_usuario_crea` int NOT NULL,
+  PRIMARY KEY (`id_ple`),
+  -- La identidad real de un libro presentado es su constancia, NO (periodo, libro): una
+  -- rectificatoria del mismo periodo genera OTRA constancia y ambas son válidas y deben
+  -- convivir. Con este UNIQUE la sincronización puede re-correrse sin duplicar.
+  UNIQUE KEY `uk_ple_constancia` (`id_empresa`,`num_archivo_res`,`ann_archivo_res`),
+  KEY `ix_ple_empresa_periodo` (`id_empresa`,`periodo`),
+  KEY `fk_ple_libro_usuario` (`id_usuario_crea`),
+  CONSTRAINT `fk_ple_libro_empresa` FOREIGN KEY (`id_empresa`) REFERENCES `empresa` (`id_empresa`) ON DELETE CASCADE,
+  CONSTRAINT `fk_ple_libro_usuario` FOREIGN KEY (`id_usuario_crea`) REFERENCES `sis_usuario` (`id_usuario`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='MÓDULO: Vencimientos Tributario. Libros presentados vía PLE (periodos anteriores a SIRE) y sus constancias de recepción.';
+
+-- Desde qué periodo esta empresa está en SIRE. Antes de él se consulta PLE, desde él
+-- se consulta la API de SIRE. Va por EMPRESA y no como constante global porque la
+-- incorporación a SIRE fue por olas: dos clientes del mismo estudio pueden tener
+-- cortes distintos. NULL = todavía no se determinó (la sincronización PLE lo deduce
+-- sola: el periodo siguiente al último libro que SUNAT devuelva por PLE).
+ALTER TABLE `empresa`
+  ADD COLUMN `sire_desde_periodo` char(6) DEFAULT NULL
+  COMMENT 'AAAAMM desde el que la empresa está en SIRE. Antes de este periodo los libros se consultan por PLE' AFTER `sunat_api_client_secret`;
+
+INSERT INTO `sis_accion` (`id_modulo`, `codigo_accion`, `descripcion`, `tipo_operacion`, `estado_registro`) VALUES
+(@id_modulo_vencimientos_sire, 'ver_ple_presentado', 'Ver los libros presentados vía PLE y descargar sus constancias', 'READ', 'ACTIVO'),
+(@id_modulo_vencimientos_sire, 'sincronizar_ple', 'Traer de SUNAT el historial de libros PLE de una empresa', 'CREATE', 'ACTIVO');
+
+INSERT INTO `sis_permiso` (`id_rol`, `id_accion`, `estado_registro`)
+SELECT 1, id_accion, 'ACTIVO' FROM sis_accion
+WHERE id_modulo = @id_modulo_vencimientos_sire AND codigo_accion IN ('ver_ple_presentado', 'sincronizar_ple');
+
+-- ---------- Detalle de ítems por comprobante (lo que el SIRE NO trae) ----------
+-- El TXT del SIRE es a nivel comprobante: no tiene descripción, cantidad ni precio
+-- unitario. Ese detalle solo existe en el XML UBL (cac:InvoiceLine), que se baja de
+-- SOL aparte (ver sunat-cpe.client.ts). Se guarda acá para no volver a SUNAT cada vez
+-- que alguien abre el detalle de una descarga.
+--
+-- No cuelga de sire_descarga a propósito: los ítems son del COMPROBANTE, no de una
+-- descarga puntual, y el mismo comprobante puede aparecer en varias descargas del
+-- mismo período. Se cruza contra las filas del SIRE por serie+número.
+CREATE TABLE `sire_comprobante_item` (
+  `id_item` int NOT NULL AUTO_INCREMENT,
+  `id_empresa` int NOT NULL COMMENT 'Empresa cliente emisora del comprobante',
+  `tipo_doc` varchar(2) NOT NULL COMMENT 'Código SUNAT: 01 factura, 07 NC, 08 ND',
+  `serie` varchar(10) NOT NULL,
+  `numero` varchar(20) NOT NULL,
+  `fecha_emision` varchar(10) DEFAULT NULL COMMENT 'DD/MM/AAAA tal como lo entrega SUNAT',
+  `nro_linea` smallint NOT NULL COMMENT 'Orden del ítem dentro del comprobante',
+  `codigo_producto` varchar(50) DEFAULT NULL,
+  `descripcion` varchar(500) NOT NULL,
+  `cantidad` decimal(18,6) NOT NULL DEFAULT '0.000000',
+  `unidad_medida` varchar(10) DEFAULT NULL,
+  `precio_unitario` decimal(18,6) NOT NULL DEFAULT '0.000000',
+  `importe` decimal(18,2) NOT NULL DEFAULT '0.00',
+  `fecha_sincronizacion` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
+  `estado_registro` enum('ACTIVO','ELIMINADO') NOT NULL DEFAULT 'ACTIVO',
+  PRIMARY KEY (`id_item`),
+  -- Permite reprocesar un período sin duplicar: el upsert va por esta clave.
+  UNIQUE KEY `uq_sire_item` (`id_empresa`,`tipo_doc`,`serie`,`numero`,`nro_linea`),
+  KEY `idx_sire_item_busqueda` (`id_empresa`,`serie`,`numero`),
+  CONSTRAINT `fk_sire_item_empresa` FOREIGN KEY (`id_empresa`) REFERENCES `empresa` (`id_empresa`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='MÓDULO: Vencimientos Tributario. Detalle de ítems (producto/cantidad/precio) extraído del XML UBL de cada comprobante.';
+
+INSERT INTO `sis_accion` (`id_modulo`, `codigo_accion`, `descripcion`, `tipo_operacion`, `estado_registro`) VALUES
+(@id_modulo_vencimientos_sire, 'sincronizar_sire_items', 'Bajar de SUNAT el detalle de ítems de los comprobantes emitidos', 'CREATE', 'ACTIVO');
+
+INSERT INTO `sis_permiso` (`id_rol`, `id_accion`, `estado_registro`)
+SELECT 1, id_accion, 'ACTIVO' FROM sis_accion
+WHERE id_modulo = @id_modulo_vencimientos_sire AND codigo_accion = 'sincronizar_sire_items';
+
 -- ---------- Seguimiento del registro automatizado de credenciales SIRE (client_id/secret) ----------
 -- No guarda el client_id/secret en sí — eso ya vive cifrado en
 -- empresa.sunat_api_client_id/sunat_api_client_secret. Esta tabla solo lleva el seguimiento
@@ -1490,8 +1654,26 @@ WHERE id_modulo = @id_modulo_vencimientos_tributario_buzon
 -- que baste con correr bd.sql una sola vez.
 -- ==============================================================================
 
+-- ------------------------------------------------------------------------------
+-- Rol SUPERADMIN — rol BASE del sistema (el otro es CLIENTE, mas abajo)
+-- ------------------------------------------------------------------------------
+-- Los dos roles base se siembran siempre en este archivo y la pantalla de ROLES no
+-- deja editarlos ni borrarlos (SeguridadService.ROLES_BASE). El motivo es distinto
+-- en cada uno:
+--   · SUPERADMIN (id_rol = 1) es el unico que puede volver a repartir permisos, y
+--     ademas el guard lo deja pasar TODO sin mirar sis_permiso. Renombrarlo o
+--     borrarlo es quedarse afuera del sistema sin manera de volver a entrar.
+--   · CLIENTE es el rol con el que entra el portal. Borrarlo deja sin acceso a
+--     todas las cuentas de empresa de golpe.
+-- El id 1 se fija a mano porque el bypass del guard lo compara por numero; CLIENTE
+-- toma el id que le toque del AUTO_INCREMENT y por eso SIEMPRE se referencia por
+-- nombre, nunca por id.
+--
+-- ON DUPLICATE KEY para que re-correr este bloque sobre una base ya cargada
+-- reponga el rol si falta y no explote con "Duplicate entry" si ya esta.
 INSERT INTO sis_rol (id_rol, nombre, descripcion, estado_registro)
-VALUES (1, 'SUPERADMIN', 'Acceso total al sistema - Administrador General', 'ACTIVO');
+VALUES (1, 'SUPERADMIN', 'Acceso total al sistema - Administrador General', 'ACTIVO')
+ON DUPLICATE KEY UPDATE descripcion = VALUES(descripcion), estado_registro = 'ACTIVO';
 
 INSERT INTO sis_usuario (id_usuario, id_rol, nombres, apellidos, correo, password, estado_registro)
 VALUES (1, 1, 'Administrador', 'Sistema', 'admin@gmail.com', '$2b$10$PqLariVCZh7HGDVF5PWDFeJG2m2guCNlhqf72hKjBiBn.Fbr8zDKO', 'ACTIVO');
@@ -1804,7 +1986,7 @@ UPDATE empresa SET sunat_sol_usuario = UNHEX('D4BD57AB7309219FB3BD1D74104EF79BFC
 UPDATE empresa SET sunat_sol_usuario = UNHEX('DC014DD04C4BB93B4E64A07DED87DB047A681C7C9FBB42B86E5D50B9ACB26BEC7C4C030D'), sunat_sol_password = UNHEX('1976B1F94CD36C740B229A2E75583341D49BC8B641B758D312711934859886F9E732AAC5FCCF') WHERE ruc = '20439924226';
 UPDATE empresa SET sunat_sol_usuario = UNHEX('39EC07D26D92F1FD07CC2C4C1CA1DA748B13ED7CE9366881281DE320C16E12936E282170'), sunat_sol_password = UNHEX('5ED8486CD5066D1508C9FE1AF15F9761081A0571CAC6651E6E19E420B9E8F302FB021B4596') WHERE ruc = '20614852756';
 UPDATE empresa SET sunat_sol_usuario = UNHEX('A0010A5D4901CBB2C22D84B8E9C0A84714E8999C7E561F5C9C557C14E2389B86A9556A91'), sunat_sol_password = UNHEX('295F93B65F2DA94E5FDA20572C92EB0BB5B6E4CA877A52DD9E517374DE34725B07EBC9381FAC40DA') WHERE ruc = '20482685286';
-UPDATE empresa SET sunat_sol_usuario = UNHEX('CC735EA7D2DCFDB888CBBF9992FCF8851C44655ABB48E66586B0E75489AE4456CC40F338'), sunat_sol_password = UNHEX('FBFE9E25210D16A19D3BDC45E3097F39D23BD61DC411F0125A2D71C6B80D622768CC8EA921D17D8FE61C') WHERE ruc = '20482257217';
+UPDATE empresa SET sunat_sol_usuario = UNHEX('4A97D9AA8A1265D12CB97B2AFC26E3688C3C6FA92D3C614B85C0E5FA4813892E0219CDB9'), sunat_sol_password = UNHEX('5FA420E6DFC3A04133FBF6621DDD10F121150439A5BA592D01051D3B4913DF6DC3620B28F3C130A472A832') WHERE ruc = '20482257217';
 UPDATE empresa SET sunat_sol_usuario = UNHEX('D51A13E7A4B4CC3DC013EEAD004945FA074F0933D53D9CD5DBEA6FE6177213BB4F634717'), sunat_sol_password = UNHEX('4A6E88599D203E7958656CCD89F0D1B20D9A81B2A92AAB657C0B56E3F156476C45FDEECEB5D3') WHERE ruc = '20481823057';
 UPDATE empresa SET sunat_sol_usuario = UNHEX('7ADB9EF304A1D696DFEB2FC4FB679273DCFCFC2A7424E46E7B4D9D1ADA0E2365B9925451'), sunat_sol_password = UNHEX('A15CFD1CD3C35319AC66F5704C6CB1D1E68FF75ED3C68D5453DC12A6A3341E380EBF26851E37C73F80') WHERE ruc = '20539949897';
 UPDATE empresa SET sunat_sol_usuario = UNHEX('44A50F03EF1B95A7FD7F1B1E8183730A59556D502BA5E5775368278DCD1047FF8D5BBD56'), sunat_sol_password = UNHEX('8FCEF172046FA6FCF8B2B01A52B0BC580D108F8D3AA8C15C6D89AEA8604AF48B8A3A4CE1549C3F') WHERE ruc = '20603146817';
@@ -2269,6 +2451,7 @@ ON DUPLICATE KEY UPDATE fecha_limite = VALUES(fecha_limite);
 -- Una fila por VERSIÓN detectada, no por corrida del job: si fuera por corrida
 -- habría ~365 filas al año diciendo "no cambió nada". Por eso el job actualiza
 -- fecha_ultima_verificacion en el sitio cuando no encuentra novedad.
+DROP TABLE IF EXISTS `planilla_sunat_descarga`;
 CREATE TABLE `planilla_sunat_descarga` (
   `id_descarga` int NOT NULL AUTO_INCREMENT,
   `url_origen` varchar(500) NOT NULL COMMENT 'URL completa del .xlsx. Cambia de nombre y carpeta en cada publicación, por eso se guarda entera',
@@ -2315,6 +2498,7 @@ CREATE TABLE `planilla_sunat_descarga` (
 -- base_cts / base_gratificacion / base_vacaciones son la excepción: NO vienen de
 -- SUNAT (son reglas del MTPE) y las define el estudio. Por eso la reimportación
 -- no las pisa.
+DROP TABLE IF EXISTS `planilla_concepto`;
 CREATE TABLE `planilla_concepto` (
   `id_concepto` int NOT NULL AUTO_INCREMENT,
   `codigo_plame` char(4) NOT NULL COMMENT 'Código oficial de 4 dígitos. Va tal cual al archivo plano del PLAME',
@@ -2374,6 +2558,7 @@ CREATE TABLE `planilla_concepto` (
 -- legible ('EMPLEADO'). El archivo plano del PLAME y del T-Registro exige el
 -- código exacto; guardar la etiqueta obliga a un mapeo manual en cada
 -- exportación, que es justo donde se rompe.
+DROP TABLE IF EXISTS `planilla_sunat_catalogo`;
 CREATE TABLE `planilla_sunat_catalogo` (
   `id_catalogo` int NOT NULL AUTO_INCREMENT,
   `tabla_num` smallint NOT NULL COMMENT 'Número de tabla del Anexo 2: 3, 8, 11, 12, 13, 15, 17, 18, 21, 24, 28, 30, 32, 33, 36...',
@@ -2811,6 +2996,7 @@ ON DUPLICATE KEY UPDATE
 -- Con esto NINGÚN `if (regimen === 'MYPE')` queda hardcodeado en el motor: la
 -- diferencia entre Régimen General, Pequeña Empresa y Microempresa es data, no
 -- lógica. Si PRODUCE cambia una regla, se edita la fila y no se despliega nada.
+DROP TABLE IF EXISTS `planilla_regimen_laboral`;
 CREATE TABLE `planilla_regimen_laboral` (
   `id_regimen` int NOT NULL AUTO_INCREMENT,
   `codigo` varchar(30) NOT NULL COMMENT 'REGIMEN_GENERAL, PEQUENA_EMPRESA, MICROEMPRESA',
@@ -2839,6 +3025,7 @@ CREATE TABLE `planilla_regimen_laboral` (
 -- ------------------------------------------------------------------------------
 -- planilla_afp — las cuatro AFP del mercado peruano
 -- ------------------------------------------------------------------------------
+DROP TABLE IF EXISTS `planilla_afp`;
 CREATE TABLE `planilla_afp` (
   `id_afp` int NOT NULL AUTO_INCREMENT,
   `codigo` varchar(20) NOT NULL,
@@ -2859,6 +3046,7 @@ CREATE TABLE `planilla_afp` (
 -- Van con vigencia y no como columnas de planilla_afp porque la SBS las actualiza
 -- CADA CUATRIMESTRE. Recalcular una planilla de marzo con las tasas de julio daría
 -- un resultado distinto al que se declaró: el motor busca la tasa vigente al periodo.
+DROP TABLE IF EXISTS `planilla_afp_tasa`;
 CREATE TABLE `planilla_afp_tasa` (
   `id_afp_tasa` int NOT NULL AUTO_INCREMENT,
   `id_afp` int NOT NULL,
@@ -2889,6 +3077,7 @@ CREATE TABLE `planilla_afp_tasa` (
 -- ------------------------------------------------------------------------------
 -- Tabla propia y no `parametro_tributario` (que ya existe) porque esa es
 -- (anio, codigo) y la RMV cambia a mitad de año: acá hace falta vigencia por FECHA.
+DROP TABLE IF EXISTS `planilla_parametro_laboral`;
 CREATE TABLE `planilla_parametro_laboral` (
   `id_parametro` int NOT NULL AUTO_INCREMENT,
   `codigo` varchar(60) NOT NULL COMMENT 'RMV, UIT, ESSALUD_PCT, ONP_PCT, ASIGNACION_FAMILIAR_PCT...',
@@ -2916,6 +3105,7 @@ CREATE TABLE `planilla_parametro_laboral` (
 -- ------------------------------------------------------------------------------
 -- Los tramos se expresan en UIT y no en soles a propósito: la ley los define así, y
 -- cuando cambia la UIT los montos se recalculan solos sin tocar esta tabla.
+DROP TABLE IF EXISTS `planilla_escala_renta_quinta`;
 CREATE TABLE `planilla_escala_renta_quinta` (
   `id_escala` int NOT NULL AUTO_INCREMENT,
   `anio` smallint NOT NULL,
@@ -2941,6 +3131,7 @@ CREATE TABLE `planilla_escala_renta_quinta` (
 -- Se siembra de la Tabla 36 de SUNAT (ya cargada en planilla_sunat_catalogo), pero
 -- vive aparte porque lleva algo que SUNAT no da: qué formato de archivo plano de
 -- telecrédito usa cada banco.
+DROP TABLE IF EXISTS `planilla_banco`;
 CREATE TABLE `planilla_banco` (
   `id_banco` int NOT NULL AUTO_INCREMENT,
   `codigo_sunat` varchar(10) NOT NULL COMMENT 'Código de la Tabla 36 (002 BCP, 003 Interbank, 009 Scotiabank, 011 BBVA)',
@@ -2965,6 +3156,7 @@ CREATE TABLE `planilla_banco` (
 -- F = falta, F1 = feriado...) y el botón "Calcular datos" cuenta los días por marca.
 -- Cada marca declara QUÉ cuenta, para que el conteo no dependa de un switch en el
 -- código: agregar una marca nueva es insertar una fila.
+DROP TABLE IF EXISTS `planilla_tareo_marca`;
 CREATE TABLE `planilla_tareo_marca` (
   `id_marca` int NOT NULL AUTO_INCREMENT,
   `codigo` varchar(5) NOT NULL COMMENT 'Lo que se escribe en la casilla del día: A, F, F1...',
@@ -3206,6 +3398,7 @@ ON DUPLICATE KEY UPDATE `nombre` = VALUES(`nombre`);
 -- 1:1 con `empresa`. Va aparte y no como columnas nuevas en `empresa` porque esa
 -- tabla es del módulo de Vencimientos y la comparten los dos módulos: agregarle
 -- doce columnas laborales la volvería un cajón de sastre.
+DROP TABLE IF EXISTS `planilla_empresa_config`;
 CREATE TABLE `planilla_empresa_config` (
   `id_config` int NOT NULL AUTO_INCREMENT,
   `id_empresa` int NOT NULL,
@@ -3254,6 +3447,7 @@ CREATE TABLE `planilla_empresa_config` (
 -- Ojo: `id_regimen` (MTPE) y `cod_regimen_laboral_sunat` (Tabla 33) NO son lo mismo
 -- y conviven. La T33 dice que el trabajador está en el D.Leg. 728 — eso se declara.
 -- `id_regimen` dice si es MYPE y cuánta CTS le toca — eso se calcula. SUNAT no lo sabe.
+DROP TABLE IF EXISTS `planilla_trabajador`;
 CREATE TABLE `planilla_trabajador` (
   `id_trabajador` int NOT NULL AUTO_INCREMENT,
   `id_empresa` int NOT NULL,
@@ -3354,6 +3548,7 @@ CREATE TABLE `planilla_trabajador` (
 -- promedios (CTS y gratificación miran el semestre) como la auditoría necesitan saber
 -- cuánto ganaba en cada momento. Guardarlo como columna borraría esa historia en
 -- cada aumento.
+DROP TABLE IF EXISTS `planilla_trabajador_remuneracion`;
 CREATE TABLE `planilla_trabajador_remuneracion` (
   `id_remuneracion` int NOT NULL AUTO_INCREMENT,
   `id_trabajador` int NOT NULL,
@@ -3380,6 +3575,7 @@ CREATE TABLE `planilla_trabajador_remuneracion` (
 -- Bonificación fija, movilidad, un préstamo en cuotas, una retención judicial. Sin
 -- esto habría que volver a teclearlos cada mes en la planilla, que es justo lo que
 -- el Excel obliga a hacer.
+DROP TABLE IF EXISTS `planilla_trabajador_concepto_fijo`;
 CREATE TABLE `planilla_trabajador_concepto_fijo` (
   `id_concepto_fijo` int NOT NULL AUTO_INCREMENT,
   `id_trabajador` int NOT NULL,
@@ -3464,6 +3660,7 @@ ON DUPLICATE KEY UPDATE `id_empresa` = VALUES(`id_empresa`);
 -- ------------------------------------------------------------------------------
 -- planilla_planilla — la corrida del mes
 -- ------------------------------------------------------------------------------
+DROP TABLE IF EXISTS `planilla_planilla`;
 CREATE TABLE `planilla_planilla` (
   `id_planilla` int NOT NULL AUTO_INCREMENT,
   `id_empresa` int NOT NULL,
@@ -3513,6 +3710,7 @@ CREATE TABLE `planilla_planilla` (
 -- Todos tienen la MISMA forma: trabajador + concepto + cantidad/monto. Ocho tablas
 -- serían ocho CRUDs idénticos que mantener; el campo `origen` conserva de qué cuadro
 -- vino para poder reproducir las pestañas en la UI.
+DROP TABLE IF EXISTS `planilla_entrada_dato`;
 CREATE TABLE `planilla_entrada_dato` (
   `id_entrada` int NOT NULL AUTO_INCREMENT,
   `id_planilla` int NOT NULL,
@@ -3549,6 +3747,7 @@ CREATE TABLE `planilla_entrada_dato` (
 -- A nivel día y no agregado, porque es lo que pide la ficha y lo que exige el
 -- registro de control de asistencia ante SUNAFIL. El botón "Calcular datos" agrupa
 -- esta tabla por marca y escribe el resumen en planilla_entrada_dato.
+DROP TABLE IF EXISTS `planilla_tareo`;
 CREATE TABLE `planilla_tareo` (
   `id_tareo` int NOT NULL AUTO_INCREMENT,
   `id_planilla` int NOT NULL,
@@ -3586,6 +3785,7 @@ CREATE TABLE `planilla_tareo` (
 -- en abril, la planilla de marzo debe seguir mostrando —y pudiendo re-explicar— el
 -- descuento con la AFP y las tasas de marzo. Sin snapshot, reabrir una planilla vieja
 -- daría números distintos a los que se declararon.
+DROP TABLE IF EXISTS `planilla_detalle`;
 CREATE TABLE `planilla_detalle` (
   `id_detalle` int NOT NULL AUTO_INCREMENT,
   `id_planilla` int NOT NULL,
@@ -3634,6 +3834,7 @@ CREATE TABLE `planilla_detalle` (
 -- ------------------------------------------------------------------------------
 -- Es lo que hace la planilla auditable, imprimible en boleta y exportable al PLAME.
 -- Guardar solo los totales haría imposible responder "¿de dónde sale este monto?".
+DROP TABLE IF EXISTS `planilla_detalle_concepto`;
 CREATE TABLE `planilla_detalle_concepto` (
   `id_detalle_concepto` int NOT NULL AUTO_INCREMENT,
   `id_detalle` int NOT NULL,
@@ -3664,6 +3865,7 @@ CREATE TABLE `planilla_detalle_concepto` (
 -- Proyección mensual de lo que la empresa va a tener que pagar por CTS, vacaciones y
 -- gratificación. No es un descuento ni un pago: es un devengo contable, y por eso
 -- vive aparte del desglose de la boleta.
+DROP TABLE IF EXISTS `planilla_provision`;
 CREATE TABLE `planilla_provision` (
   `id_provision` int NOT NULL AUTO_INCREMENT,
   `id_planilla` int NOT NULL,
@@ -3721,6 +3923,7 @@ WHERE id_modulo = @id_modulo_planilla
 -- ------------------------------------------------------------------------------
 -- planilla_beneficio — la corrida del beneficio
 -- ------------------------------------------------------------------------------
+DROP TABLE IF EXISTS `planilla_beneficio`;
 CREATE TABLE `planilla_beneficio` (
   `id_beneficio` int NOT NULL AUTO_INCREMENT,
   `id_empresa` int NOT NULL,
@@ -3771,6 +3974,7 @@ CREATE TABLE `planilla_beneficio` (
 -- En el Excel eso es una celda con una fórmula ilegible; acá cada parte queda visible.
 -- Es lo que hay que sustentar ante SUNAFIL en una fiscalización, y lo que el contador
 -- necesita para explicarle al cliente de dónde sale la cifra.
+DROP TABLE IF EXISTS `planilla_beneficio_detalle`;
 CREATE TABLE `planilla_beneficio_detalle` (
   `id_beneficio_detalle` int NOT NULL AUTO_INCREMENT,
   `id_beneficio` int NOT NULL,
@@ -3861,7 +4065,8 @@ WHERE id_modulo = @id_modulo_planilla
 --
 -- Los patrones se guardan SIN TILDES a propósito: la comparación normaliza los dos
 -- lados, y el portal escribe los acentos de forma inconsistente.
-CREATE TABLE IF NOT EXISTS `sunat_error_conocido` (
+DROP TABLE IF EXISTS `sunat_error_conocido`;
+CREATE TABLE `sunat_error_conocido` (
   `id_error` int NOT NULL AUTO_INCREMENT COMMENT 'Llave primaria',
   `codigo` varchar(30) NOT NULL COMMENT 'Código corto para nombrarlo al hablar (ej: WAF_CORTE)',
   `patron` varchar(400) NOT NULL COMMENT 'Expresion regular que se busca en el diagnostico. SIN TILDES.',
@@ -4119,7 +4324,8 @@ WHERE codigo = 'TREG';
 -- No se reusa `empresa` porque ahí viven los CLIENTES DEL ESTUDIO (las 171). Los
 -- terceros son los clientes y proveedores DE cada una de esas empresas, que es otra
 -- cosa: el proveedor de un cliente no es cliente del estudio.
-CREATE TABLE IF NOT EXISTS `tesoreria_tercero` (
+DROP TABLE IF EXISTS `tesoreria_tercero`;
+CREATE TABLE `tesoreria_tercero` (
   `id_tercero` INT AUTO_INCREMENT PRIMARY KEY,
   `id_empresa` INT NOT NULL,
   `tipo_documento` ENUM('RUC','DNI','CE','PASAPORTE','SIN_DOC') NOT NULL DEFAULT 'RUC',
@@ -4151,7 +4357,8 @@ CREATE TABLE IF NOT EXISTS `tesoreria_tercero` (
 -- ------------------------------------------------------------------------------
 -- Catálogo global (no lleva id_empresa): "efectivo" o "Yape" significan lo mismo
 -- para todas.
-CREATE TABLE IF NOT EXISTS `tesoreria_medio_pago` (
+DROP TABLE IF EXISTS `tesoreria_medio_pago`;
+CREATE TABLE `tesoreria_medio_pago` (
   `id_medio_pago` INT AUTO_INCREMENT PRIMARY KEY,
   `codigo` VARCHAR(20) NOT NULL,
   `nombre` VARCHAR(60) NOT NULL,
@@ -4167,7 +4374,8 @@ CREATE TABLE IF NOT EXISTS `tesoreria_medio_pago` (
 -- ------------------------------------------------------------------------------
 -- Cuentas de la empresa
 -- ------------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS `tesoreria_cuenta` (
+DROP TABLE IF EXISTS `tesoreria_cuenta`;
+CREATE TABLE `tesoreria_cuenta` (
   `id_cuenta` INT AUTO_INCREMENT PRIMARY KEY,
   `id_empresa` INT NOT NULL,
   -- FK a planilla_banco (catálogo SUNAT Tabla 36). NULL = caja en efectivo.
@@ -4200,7 +4408,8 @@ CREATE TABLE IF NOT EXISTS `tesoreria_cuenta` (
 -- `tabla_origen` + `id_registro_origen` dicen QUIÉN generó el movimiento. Van como
 -- VARCHAR y no como ENUM a propósito: el ENUM del sistema original obliga a un ALTER
 -- cada vez que un módulo nuevo registra plata, y esos ALTER se olvidan.
-CREATE TABLE IF NOT EXISTS `tesoreria_movimiento` (
+DROP TABLE IF EXISTS `tesoreria_movimiento`;
+CREATE TABLE `tesoreria_movimiento` (
   `id_movimiento` INT AUTO_INCREMENT PRIMARY KEY,
   `id_empresa` INT NOT NULL,
   `id_cuenta` INT NOT NULL,
@@ -4242,7 +4451,8 @@ CREATE TABLE IF NOT EXISTS `tesoreria_movimiento` (
 -- ------------------------------------------------------------------------------
 -- Cuentas por COBRAR
 -- ------------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS `tesoreria_orden_cobro` (
+DROP TABLE IF EXISTS `tesoreria_orden_cobro`;
+CREATE TABLE `tesoreria_orden_cobro` (
   `id_orden_cobro` INT AUTO_INCREMENT PRIMARY KEY,
   `id_empresa` INT NOT NULL,
   `codigo_orden` VARCHAR(30) NOT NULL,
@@ -4275,7 +4485,8 @@ CREATE TABLE IF NOT EXISTS `tesoreria_orden_cobro` (
   CONSTRAINT `fk_cobro_tercero` FOREIGN KEY (`id_tercero`) REFERENCES `tesoreria_tercero` (`id_tercero`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-CREATE TABLE IF NOT EXISTS `tesoreria_orden_cobro_cuota` (
+DROP TABLE IF EXISTS `tesoreria_orden_cobro_cuota`;
+CREATE TABLE `tesoreria_orden_cobro_cuota` (
   `id_cuota` INT AUTO_INCREMENT PRIMARY KEY,
   `id_orden_cobro` INT NOT NULL,
   `numero_cuota` INT NOT NULL,
@@ -4292,7 +4503,8 @@ CREATE TABLE IF NOT EXISTS `tesoreria_orden_cobro_cuota` (
 -- Un abono ES un movimiento: por eso `id_movimiento` es UNIQUE y obligatorio. Así no
 -- puede existir plata cobrada que no aparezca en el libro, ni el mismo ingreso
 -- aplicado dos veces a la misma orden.
-CREATE TABLE IF NOT EXISTS `tesoreria_orden_cobro_abono` (
+DROP TABLE IF EXISTS `tesoreria_orden_cobro_abono`;
+CREATE TABLE `tesoreria_orden_cobro_abono` (
   `id_abono` INT AUTO_INCREMENT PRIMARY KEY,
   `id_orden_cobro` INT NOT NULL,
   `id_cuota` INT NULL,
@@ -4316,7 +4528,8 @@ CREATE TABLE IF NOT EXISTS `tesoreria_orden_cobro_abono` (
 -- "sentido" porque los estados, los reportes y los permisos son distintos, y una
 -- tabla única obligaría a filtrar por sentido en cada consulta — justo el filtro que
 -- alguien olvida y termina mostrando lo que se debe mezclado con lo que le deben.
-CREATE TABLE IF NOT EXISTS `tesoreria_orden_pago` (
+DROP TABLE IF EXISTS `tesoreria_orden_pago`;
+CREATE TABLE `tesoreria_orden_pago` (
   `id_orden_pago` INT AUTO_INCREMENT PRIMARY KEY,
   `id_empresa` INT NOT NULL,
   `codigo_orden` VARCHAR(30) NOT NULL,
@@ -4346,7 +4559,8 @@ CREATE TABLE IF NOT EXISTS `tesoreria_orden_pago` (
   CONSTRAINT `fk_pago_tercero` FOREIGN KEY (`id_tercero`) REFERENCES `tesoreria_tercero` (`id_tercero`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-CREATE TABLE IF NOT EXISTS `tesoreria_orden_pago_cuota` (
+DROP TABLE IF EXISTS `tesoreria_orden_pago_cuota`;
+CREATE TABLE `tesoreria_orden_pago_cuota` (
   `id_cuota` INT AUTO_INCREMENT PRIMARY KEY,
   `id_orden_pago` INT NOT NULL,
   `numero_cuota` INT NOT NULL,
@@ -4360,7 +4574,8 @@ CREATE TABLE IF NOT EXISTS `tesoreria_orden_pago_cuota` (
   CONSTRAINT `fk_cuota_pago` FOREIGN KEY (`id_orden_pago`) REFERENCES `tesoreria_orden_pago` (`id_orden_pago`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-CREATE TABLE IF NOT EXISTS `tesoreria_orden_pago_abono` (
+DROP TABLE IF EXISTS `tesoreria_orden_pago_abono`;
+CREATE TABLE `tesoreria_orden_pago_abono` (
   `id_abono` INT AUTO_INCREMENT PRIMARY KEY,
   `id_orden_pago` INT NOT NULL,
   `id_cuota` INT NULL,
@@ -4469,6 +4684,7 @@ ON DUPLICATE KEY UPDATE `estado_registro` = 'ACTIVO';
 -- El PDF va a `storage-privado/contratos`, NUNCA a `uploads/`: main.ts publica
 -- `uploads/` como estático SIN login, y un contrato laboral lleva sueldo y DNI.
 -- Se sirve por endpoint con guard, igual que las constancias de declaración.
+DROP TABLE IF EXISTS `planilla_contrato`;
 CREATE TABLE `planilla_contrato` (
   `id_contrato` int NOT NULL AUTO_INCREMENT,
   `id_trabajador` int NOT NULL,
@@ -4520,6 +4736,75 @@ WHERE id_modulo = @id_modulo_planilla
 ON DUPLICATE KEY UPDATE `estado_registro` = 'ACTIVO';
 
 -- ------------------------------------------------------------------------------
+-- planilla_boleta_firmada — el cargo de entrega de la boleta
+-- ------------------------------------------------------------------------------
+-- No contradice la regla de "la boleta no se guarda". Son dos documentos distintos:
+--   · La boleta que emite el sistema se REGENERA idéntica desde planilla_detalle, así
+--     que guardarla sería una segunda copia que puede desincronizarse.
+--   · Esta es la boleta IMPRESA Y FIRMADA por el trabajador, escaneada. No se puede
+--     regenerar: la firma no está en ninguna tabla. Es la prueba de entrega que exige
+--     el D.S. 001-98-TR, y es lo que se muestra en una fiscalización de SUNAFIL.
+-- Mismo criterio que `planilla_contrato`: lo generable no se archiva, lo firmado sí.
+--
+-- El PDF va a `storage-privado/boletas-firmadas`, NUNCA a `uploads/`: main.ts publica
+-- `uploads/` como estático SIN login, y una boleta lleva sueldo, DNI y firma.
+--
+-- UNA fila por (planilla, trabajador) — el UNIQUE lo garantiza. Volver a subir NO
+-- inserta otra: reemplaza el archivo de la fila que ya está (ver `registrarFirmada`).
+-- Sin esa regla, un segundo escaneo dejaría dos filas y nadie sabría cuál es la buena.
+DROP TABLE IF EXISTS `planilla_boleta_firmada`;
+CREATE TABLE `planilla_boleta_firmada` (
+  `id_boleta_firmada` int NOT NULL AUTO_INCREMENT,
+  `id_planilla` int NOT NULL,
+  `id_trabajador` int NOT NULL,
+  `id_empresa` int NOT NULL COMMENT 'Redundante con planilla_planilla.id_empresa, igual que en planilla_contrato: el portal cliente filtra por esta columna sin un JOIN extra',
+
+  `archivo_ruta` varchar(255) NOT NULL COMMENT 'Ruta RELATIVA (/boletas-firmadas/<archivo>.pdf). Nunca absoluta: el path del hosting no es el de local',
+  `archivo_nombre` varchar(255) NOT NULL COMMENT 'Nombre original del PDF — es el que se devuelve al descargar, no el nombre aleatorio de disco',
+  `archivo_tamano` int NOT NULL DEFAULT 0 COMMENT 'Bytes, medidos en disco. Se muestra en la lista',
+
+  `fecha_entrega` date DEFAULT NULL
+    COMMENT 'Cuándo firmó el trabajador. Va aparte de la fecha de subida: se escanea un lote entero semanas después y la fecha que vale ante SUNAFIL es la del papel',
+  `observaciones` varchar(255) DEFAULT NULL COMMENT 'Notas internas del estudio ("firmó con huella", "recibió por correo")',
+
+  `estado_registro` enum('ACTIVO','ELIMINADO') NOT NULL DEFAULT 'ACTIVO',
+  `id_usuario_crea` int NOT NULL,
+  `id_usuario_mod` int DEFAULT NULL,
+  PRIMARY KEY (`id_boleta_firmada`),
+  -- Sin `estado_registro` en el UNIQUE a propósito: si estuviera, dar de baja y volver
+  -- a subir crearía una segunda fila y el "una por trabajador y periodo" dejaría de
+  -- valer. Al reactivar se REUSA esta misma fila.
+  UNIQUE KEY `uk_planilla_boleta_firmada` (`id_planilla`,`id_trabajador`),
+  KEY `ix_planilla_boleta_firmada_empresa` (`id_empresa`,`estado_registro`),
+  KEY `ix_planilla_boleta_firmada_trabajador` (`id_trabajador`,`estado_registro`),
+  KEY `fk_planilla_boleta_firmada_usuario` (`id_usuario_crea`),
+  CONSTRAINT `fk_planilla_boleta_firmada_planilla` FOREIGN KEY (`id_planilla`) REFERENCES `planilla_planilla` (`id_planilla`) ON DELETE CASCADE,
+  CONSTRAINT `fk_planilla_boleta_firmada_trabajador` FOREIGN KEY (`id_trabajador`) REFERENCES `planilla_trabajador` (`id_trabajador`) ON DELETE CASCADE,
+  CONSTRAINT `fk_planilla_boleta_firmada_empresa` FOREIGN KEY (`id_empresa`) REFERENCES `empresa` (`id_empresa`) ON DELETE CASCADE,
+  CONSTRAINT `fk_planilla_boleta_firmada_usuario` FOREIGN KEY (`id_usuario_crea`) REFERENCES `sis_usuario` (`id_usuario`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='MÓDULO: Planilla. Boleta de pago firmada por el trabajador, escaneada. El PDF vive en storage-privado/boletas-firmadas.';
+
+-- ------------------------------------------------------------------------------
+-- Permisos del ESTUDIO sobre las boletas firmadas (módulo PLANILLA)
+-- ------------------------------------------------------------------------------
+-- Claves propias y NO reuso de `generar_boleta`: emitir la boleta y archivar el cargo
+-- firmado son dos cosas distintas. Quien imprime no tiene por qué poder borrar la
+-- prueba de entrega de un periodo ya fiscalizable.
+SET @id_modulo_planilla = (SELECT id_modulo FROM sis_modulo WHERE nombre = 'PLANILLA');
+
+INSERT INTO `sis_accion` (`id_modulo`, `codigo_accion`, `descripcion`, `tipo_operacion`, `estado_registro`) VALUES
+(@id_modulo_planilla, 'ver_boleta_firmada',      'Ver y descargar las boletas firmadas archivadas',        'READ',   'ACTIVO'),
+(@id_modulo_planilla, 'subir_boleta_firmada',    'Subir el PDF de una boleta firmada por el trabajador',   'CREATE', 'ACTIVO'),
+(@id_modulo_planilla, 'eliminar_boleta_firmada', 'Dar de baja una boleta firmada ya archivada',            'DELETE', 'ACTIVO')
+ON DUPLICATE KEY UPDATE `descripcion` = VALUES(`descripcion`);
+
+INSERT INTO `sis_permiso` (`id_rol`, `id_accion`, `estado_registro`)
+SELECT 1, id_accion, 'ACTIVO' FROM sis_accion
+WHERE id_modulo = @id_modulo_planilla
+  AND codigo_accion IN ('ver_boleta_firmada','subir_boleta_firmada','eliminar_boleta_firmada')
+ON DUPLICATE KEY UPDATE `estado_registro` = 'ACTIVO';
+
+-- ------------------------------------------------------------------------------
 -- Módulo PLANILLAS_CLIENTE — lo que ve la empresa desde el portal
 -- ------------------------------------------------------------------------------
 -- Módulo APARTE de PLANILLA a propósito. Si el portal reusara `ver_planilla`, dar
@@ -4547,11 +4832,21 @@ SELECT 1, id_accion, 'ACTIVO' FROM sis_accion WHERE id_modulo = @id_modulo_plani
 ON DUPLICATE KEY UPDATE `estado_registro` = 'ACTIVO';
 
 -- ------------------------------------------------------------------------------
--- Rol CLIENTE
+-- Rol CLIENTE — rol BASE del sistema (el otro es SUPERADMIN, más arriba)
 -- ------------------------------------------------------------------------------
--- Lleva EXACTAMENTE las cuatro acciones de PLANILLAS_CLIENTE y ninguna más. Un
--- usuario con este rol y sin `id_empresa` no puede hacer nada: el backend responde
+-- Acá recibe las acciones de PLANILLAS_CLIENTE; más abajo, en los bloques de sus
+-- módulos, suma las de CAJAS_CLIENTE y SIRE_CLIENTE. Lo que NO puede tener nunca es
+-- una acción de fuera del portal: `EmpresasService.MODULOS_PORTAL` exige que TODOS
+-- sus permisos caigan dentro de esa lista, y con uno solo afuera el rol desaparece
+-- del selector de cuentas de portal y no se pueden crear más usuarios de empresa.
+--
+-- Un usuario con este rol y sin `id_empresa` no puede hacer nada: el backend responde
 -- 403 antes de consultar (ver `resolverEmpresa()` en los services de erp/cliente/).
+--
+-- Como rol base, la pantalla de ROLES no lo deja editar ni eliminar: borrarlo deja
+-- sin acceso, de golpe, a todas las cuentas de portal de todas las empresas. El
+-- backend lo bloquea por NOMBRE (`SeguridadService.ROLES_BASE`) y no por id, porque
+-- acá el id sale del AUTO_INCREMENT y cambia según el orden en que se cargue la base.
 INSERT INTO `sis_rol` (`nombre`, `descripcion`, `estado_registro`) VALUES
 ('CLIENTE', 'Empresa cliente del estudio. Entra al portal a ver su personal y descargar boletas y contratos. Solo lectura y solo sobre su propia empresa (sis_usuario.id_empresa).', 'ACTIVO')
 ON DUPLICATE KEY UPDATE `descripcion` = VALUES(`descripcion`), `estado_registro` = 'ACTIVO';
@@ -4593,6 +4888,7 @@ ON DUPLICATE KEY UPDATE `estado_registro` = 'ACTIVO';
 --
 -- La leyenda de marcas es la MISMA (`planilla_tareo_marca`): dos leyendas distintas
 -- para lo mismo terminan en que un "F" no significa lo mismo en cada pantalla.
+DROP TABLE IF EXISTS `planilla_asistencia`;
 CREATE TABLE `planilla_asistencia` (
   `id_asistencia` int NOT NULL AUTO_INCREMENT,
   `id_empresa` int NOT NULL
@@ -4779,21 +5075,6 @@ CREATE TABLE `caja_chica_movimiento` (
   `estado` ENUM('REGISTRADO','ANULADO') NOT NULL DEFAULT 'REGISTRADO',
   `motivo_anulacion` VARCHAR(255) NULL,
   `id_usuario_anula` INT NULL,
-  -- ── Revisión del estudio ──────────────────────────────────────────────────
-  -- Existe por el PORTAL CLIENTE: la empresa carga sus gastos con la boleta (es el
-  -- dato que ella conoce de primera mano y el estudio no), pero un monto cargado por
-  -- el cliente NO entra a contabilidad sin que alguien del estudio lo mire.
-  --
-  -- Un movimiento solo mueve el saldo cuando `estado = 'REGISTRADO'` Y
-  -- `revision = 'APROBADO'`. Lo que el cliente carga nace 'POR_REVISAR': se ve en su
-  -- estado de cuenta, pero no descuenta hasta que el estudio lo aprueba.
-  --
-  -- El DEFAULT es 'APROBADO' a propósito: lo que registra el estudio desde la
-  -- intranet ya está revisado por definición, y así el módulo de intranet no tuvo que
-  -- cambiar de comportamiento al agregarse el portal.
-  `revision` ENUM('APROBADO','POR_REVISAR','RECHAZADO') NOT NULL DEFAULT 'APROBADO',
-  `motivo_rechazo` VARCHAR(255) NULL,
-  `id_usuario_revisa` INT NULL,
   `estado_registro` ENUM('ACTIVO','ELIMINADO') NOT NULL DEFAULT 'ACTIVO',
   `id_usuario_crea` INT NULL,
   `id_usuario_mod` INT NULL,
@@ -4801,9 +5082,6 @@ CREATE TABLE `caja_chica_movimiento` (
   KEY `idx_mov_caja_estado` (`id_caja`, `estado`, `estado_registro`),
   KEY `idx_mov_concepto` (`id_caja_concepto`),
   KEY `idx_mov_origen` (`tabla_origen`, `id_registro_origen`),
-  -- La bandeja de "pendientes por revisar" del estudio cruza TODAS las empresas, así
-  -- que el índice va por revisión y no por caja.
-  KEY `idx_mov_revision` (`revision`, `estado`, `estado_registro`),
   CONSTRAINT `fk_mov_caja` FOREIGN KEY (`id_caja`) REFERENCES `caja_chica` (`id_caja`),
   CONSTRAINT `fk_mov_caja_concepto` FOREIGN KEY (`id_caja_concepto`) REFERENCES `caja_chica_concepto` (`id_caja_concepto`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='MÓDULO: CAJAS — libro de movimientos de una caja chica';
@@ -4851,7 +5129,6 @@ INSERT INTO `sis_accion` (`id_modulo`, `codigo_accion`, `descripcion`, `tipo_ope
 (@id_modulo_tesoreria_cajas, 'crear_movimiento_caja',  'Registrar un ingreso o un gasto en una caja',       'CREATE',  'ACTIVO'),
 (@id_modulo_tesoreria_cajas, 'editar_movimiento_caja', 'Corregir un movimiento de caja ya registrado',      'UPDATE',  'ACTIVO'),
 (@id_modulo_tesoreria_cajas, 'anular_movimiento_caja', 'Anular un movimiento de caja y revertir su saldo',  'SPECIAL', 'ACTIVO'),
-(@id_modulo_tesoreria_cajas, 'revisar_movimiento_caja','Aprobar o rechazar un gasto cargado por el cliente', 'SPECIAL', 'ACTIVO'),
 (@id_modulo_tesoreria_cajas, 'exportar_excel_caja',    'Exportar cajas y estados de cuenta a Excel',        'READ',    'ACTIVO'),
 (@id_modulo_tesoreria_cajas, 'exportar_pdf_caja',      'Exportar cajas y estados de cuenta a PDF',          'READ',    'ACTIVO')
 ON DUPLICATE KEY UPDATE `descripcion` = VALUES(`descripcion`), `estado_registro` = 'ACTIVO';
@@ -4861,7 +5138,7 @@ SELECT 1, id_accion, 'ACTIVO' FROM sis_accion
 WHERE id_modulo = @id_modulo_tesoreria_cajas
   AND codigo_accion IN ('ver_caja','crear_caja','editar_caja','cerrar_caja','eliminar_caja',
                         'crear_movimiento_caja','editar_movimiento_caja','anular_movimiento_caja',
-                        'revisar_movimiento_caja','exportar_excel_caja','exportar_pdf_caja')
+                        'exportar_excel_caja','exportar_pdf_caja')
 ON DUPLICATE KEY UPDATE `estado_registro` = 'ACTIVO';
 
 -- ------------------------------------------------------------------------------
@@ -4871,6 +5148,12 @@ ON DUPLICATE KEY UPDATE `estado_registro` = 'ACTIVO';
 -- asistencia y modalidad de pago. Una caja chica no es planilla: meterla ahí haría que
 -- la pantalla de permisos muestre "Planillas Cliente > ver caja", y obligaría a darle
 -- permisos de planilla a un cliente que solo usa la caja.
+--
+-- Son las MISMAS acciones que `TESORERIA` sobre cajas, con el sufijo `_cliente`: la
+-- caja es de la empresa y ella la maneja entera (abrir, corregir, cerrar, registrar,
+-- anular). El scope no lo da el permiso sino el token — el service filtra por
+-- `id_empresa` en cada query. Lo único que el portal NO tiene es `eliminar`: una caja
+-- abierta por error se cierra, que deja el rastro.
 INSERT INTO `sis_modulo` (`nombre`, `etiqueta`, `estado_registro`)
 SELECT 'CAJAS_CLIENTE', 'Cajas Cliente', 'ACTIVO'
 WHERE NOT EXISTS (SELECT 1 FROM `sis_modulo` WHERE `nombre` = 'CAJAS_CLIENTE');
@@ -4878,9 +5161,14 @@ WHERE NOT EXISTS (SELECT 1 FROM `sis_modulo` WHERE `nombre` = 'CAJAS_CLIENTE');
 SET @id_modulo_cajas_cliente = (SELECT id_modulo FROM sis_modulo WHERE nombre = 'CAJAS_CLIENTE');
 
 INSERT INTO `sis_accion` (`id_modulo`, `codigo_accion`, `descripcion`, `tipo_operacion`, `estado_registro`) VALUES
-(@id_modulo_cajas_cliente, 'ver_caja_cliente',              'Ver las cajas chicas de su propia empresa',              'READ',    'ACTIVO'),
-(@id_modulo_cajas_cliente, 'crear_movimiento_caja_cliente', 'Registrar un gasto de caja, sujeto a revisión',          'CREATE',  'ACTIVO'),
-(@id_modulo_cajas_cliente, 'exportar_pdf_caja_cliente',     'Descargar el estado de cuenta de su caja en PDF',        'SPECIAL', 'ACTIVO')
+(@id_modulo_cajas_cliente, 'ver_caja_cliente',               'Ver las cajas chicas de su propia empresa',            'READ',    'ACTIVO'),
+(@id_modulo_cajas_cliente, 'crear_caja_cliente',             'Abrir una caja chica de su empresa',                   'CREATE',  'ACTIVO'),
+(@id_modulo_cajas_cliente, 'editar_caja_cliente',            'Corregir los datos y el fondo inicial de su caja',     'UPDATE',  'ACTIVO'),
+(@id_modulo_cajas_cliente, 'cerrar_caja_cliente',            'Cerrar su caja: deja de aceptar movimientos',          'SPECIAL', 'ACTIVO'),
+(@id_modulo_cajas_cliente, 'crear_movimiento_caja_cliente',  'Registrar un gasto o una reposición en su caja',       'CREATE',  'ACTIVO'),
+(@id_modulo_cajas_cliente, 'editar_movimiento_caja_cliente', 'Corregir un movimiento de su caja ya registrado',      'UPDATE',  'ACTIVO'),
+(@id_modulo_cajas_cliente, 'anular_movimiento_caja_cliente', 'Anular un movimiento de su caja y revertir su saldo',  'SPECIAL', 'ACTIVO'),
+(@id_modulo_cajas_cliente, 'exportar_pdf_caja_cliente',      'Descargar el estado de cuenta y el arqueo en PDF',     'READ',    'ACTIVO')
 ON DUPLICATE KEY UPDATE `descripcion` = VALUES(`descripcion`), `estado_registro` = 'ACTIVO';
 
 -- El rol 1 las recibe por convención del proyecto (para que la pantalla de permisos
@@ -4896,6 +5184,89 @@ SELECT (SELECT id_rol FROM sis_rol WHERE nombre = 'CLIENTE'), id_accion, 'ACTIVO
 FROM sis_accion
 WHERE id_modulo = @id_modulo_cajas_cliente
 ON DUPLICATE KEY UPDATE `estado_registro` = 'ACTIVO';
+
+
+-- ==============================================================================
+-- 11. TABLEROS DEL PORTAL CLIENTE — la foto de la empresa y la de su caja chica
+-- ==============================================================================
+-- Backend  `apps/api/src/erp/clientes-planillas/tablero/`  (`GET cliente/tablero` y
+--          `GET cliente/tablero/caja`)
+-- Frontend `erp-frontend/src/app/erp/clientes-planillas/tablero/`
+--          (`/cliente/tablero` y `/cliente/cajas/tablero`)
+--
+-- ── Por qué esta sección NO crea ninguna tabla ──
+--
+-- Un tablero no guarda nada: agrega con SELECT lo que ya cargaron `personal`,
+-- `asistencia`, `planillas` y `cajas`. Crear una tabla de "métricas" sería peor que
+-- inútil — sería una segunda fuente de verdad que se desincroniza el primer día que
+-- alguien anule un movimiento o recalcule una planilla, y entonces el tablero y el
+-- estado de cuenta muestran plata distinta sin que nada avise. Lo único que hace falta
+-- es que existan las dos acciones: sin fila en `sis_accion` el endpoint devuelve 403 y
+-- el ítem no aparece en el sidebar, sin importar el rol.
+--
+-- ── Por qué DOS acciones, en DOS módulos distintos ──
+--
+-- Cada tablero muestra los datos de su módulo y nada más, así que pide el permiso de
+-- ese módulo. Es la misma razón por la que la caja del portal tiene módulo propio (ver
+-- la sección 10): una empresa que solo usa la caja chica no tiene por qué recibir
+-- permisos de planilla para ver su tablero de caja, y una que solo mira planillas no
+-- tiene por qué ver cuánta plata hay en la caja. Con un permiso único (`ver_tablero`)
+-- eso no se puede expresar, y el error se paga mostrándole a un cliente un número que
+-- no le corresponde.
+--
+-- ── Por qué son acciones NUEVAS y no `ver_personal_cliente` / `ver_caja_cliente` ──
+--
+-- El tablero cruza en una sola pantalla lo que en el portal está repartido: sueldos
+-- vigentes, masa salarial, evolución de la planilla, saldo de la caja. Hay empresas
+-- donde el encargado de RR.HH. carga la asistencia pero no debería ver la masa
+-- salarial de todos juntos. Con permiso propio, dar o quitar esa vista de conjunto es
+-- una casilla; reusando el permiso de la lista, no hay forma de separarlas.
+--
+-- Los dos INSERT son idempotentes (`ON DUPLICATE KEY UPDATE`): re-correr el bloque
+-- sobre una base que ya lo tiene no duplica ni rompe nada.
+
+-- ------------------------------------------------------------------------------
+-- Tablero de planilla — módulo PLANILLAS_CLIENTE
+-- ------------------------------------------------------------------------------
+SET @id_modulo_planillas_cliente = (SELECT id_modulo FROM sis_modulo WHERE nombre = 'PLANILLAS_CLIENTE');
+
+INSERT INTO `sis_accion` (`id_modulo`, `codigo_accion`, `descripcion`, `tipo_operacion`, `estado_registro`) VALUES
+(@id_modulo_planillas_cliente, 'ver_tablero_cliente', 'Ver el tablero de su empresa: personal, asistencia del mes y evolución de la planilla', 'READ', 'ACTIVO')
+ON DUPLICATE KEY UPDATE `descripcion` = VALUES(`descripcion`), `estado_registro` = 'ACTIVO';
+
+-- El rol 1 la recibe por convención del proyecto (para que la pantalla de permisos la
+-- muestre marcada), aunque el bypass del guard lo deja pasar igual.
+INSERT INTO `sis_permiso` (`id_rol`, `id_accion`, `estado_registro`)
+SELECT 1, id_accion, 'ACTIVO' FROM sis_accion
+WHERE id_modulo = @id_modulo_planillas_cliente AND codigo_accion = 'ver_tablero_cliente'
+ON DUPLICATE KEY UPDATE `estado_registro` = 'ACTIVO';
+
+INSERT INTO `sis_permiso` (`id_rol`, `id_accion`, `estado_registro`)
+SELECT (SELECT id_rol FROM sis_rol WHERE nombre = 'CLIENTE'), id_accion, 'ACTIVO'
+FROM sis_accion
+WHERE id_modulo = @id_modulo_planillas_cliente AND codigo_accion = 'ver_tablero_cliente'
+ON DUPLICATE KEY UPDATE `estado_registro` = 'ACTIVO';
+
+-- ------------------------------------------------------------------------------
+-- Tablero de caja chica — módulo CAJAS_CLIENTE
+-- ------------------------------------------------------------------------------
+SET @id_modulo_cajas_cliente = (SELECT id_modulo FROM sis_modulo WHERE nombre = 'CAJAS_CLIENTE');
+
+INSERT INTO `sis_accion` (`id_modulo`, `codigo_accion`, `descripcion`, `tipo_operacion`, `estado_registro`) VALUES
+(@id_modulo_cajas_cliente, 'ver_tablero_caja_cliente', 'Ver el tablero de su caja chica: saldo, gastos del mes y en qué se va la plata', 'READ', 'ACTIVO')
+ON DUPLICATE KEY UPDATE `descripcion` = VALUES(`descripcion`), `estado_registro` = 'ACTIVO';
+
+INSERT INTO `sis_permiso` (`id_rol`, `id_accion`, `estado_registro`)
+SELECT 1, id_accion, 'ACTIVO' FROM sis_accion
+WHERE id_modulo = @id_modulo_cajas_cliente AND codigo_accion = 'ver_tablero_caja_cliente'
+ON DUPLICATE KEY UPDATE `estado_registro` = 'ACTIVO';
+
+INSERT INTO `sis_permiso` (`id_rol`, `id_accion`, `estado_registro`)
+SELECT (SELECT id_rol FROM sis_rol WHERE nombre = 'CLIENTE'), id_accion, 'ACTIVO'
+FROM sis_accion
+WHERE id_modulo = @id_modulo_cajas_cliente AND codigo_accion = 'ver_tablero_caja_cliente'
+ON DUPLICATE KEY UPDATE `estado_registro` = 'ACTIVO';
+
 
 -- ==============================================================================
 -- MIGRACIONES SOBRE BASES YA EXISTENTES
@@ -4989,6 +5360,69 @@ INSERT INTO `sis_permiso` (`id_rol`, `id_accion`, `estado_registro`)
 SELECT 1, id_accion, 'ACTIVO' FROM sis_accion
 WHERE id_modulo = @id_modulo_venc_portal
   AND codigo_accion IN ('ver_usuario_portal','crear_usuario_portal','editar_usuario_portal','eliminar_usuario_portal')
+ON DUPLICATE KEY UPDATE `estado_registro` = 'ACTIVO';
+
+-- ==============================================================================
+
+-- 2026-09-04 · SIRE del PORTAL CLIENTE — módulo SIRE_CLIENTE
+--
+-- Backend  `apps/api/src/erp/clientes-planillas/sire/`  (`GET cliente/sire`,
+--          `GET cliente/sire/anios`, `GET cliente/sire/:id/detalle`,
+--          `GET cliente/sire/:id/archivo`)
+-- Frontend `erp-frontend/src/app/erp/clientes-planillas/sire/`  (`/cliente/sire`)
+--
+-- ── Por qué NO crea ninguna tabla ──
+--
+-- Lee `sire_descarga`, la misma que ya llena la pantalla del estudio
+-- (`vencimientos/sire`). Duplicarla "para el portal" sería una segunda copia de los
+-- libros de SUNAT que se desincroniza el día que el estudio vuelva a bajar un periodo
+-- corregido, y entonces cliente y contador estarían mirando ventas distintas. El
+-- portal filtra la MISMA tabla por `id_empresa` (del token) y por
+-- `estado_ticket = 'TERMINADO' AND archivo_ruta IS NOT NULL`.
+--
+-- ── Por qué módulo propio y no VENCIMIENTOS_TRIBUTARIO ni PLANILLAS_CLIENTE ──
+--
+-- `VENCIMIENTOS_TRIBUTARIO` es del estudio: sus acciones (`usar_sire`,
+-- `generar_sire_descarga`) operan sobre las ~170 empresas y hablan con SUNAT. Un
+-- cliente con cualquiera de ellas queda a un checkbox mal marcado de pedir tickets por
+-- cuenta de otro. Y `PLANILLAS_CLIENTE` agrupa personal, planillas y asistencia: el
+-- registro de ventas y compras no es planilla, y hay clientes que llevan contabilidad
+-- con el estudio pero no planilla (y al revés). Misma razón por la que `CAJAS_CLIENTE`
+-- existe aparte.
+--
+-- ── Por qué DOS acciones y no una ──
+--
+-- `ver_sire_cliente` es mirar los comprobantes en la grilla; `descargar_sire_cliente`
+-- es llevarse el ZIP original de SUNAT. Con un permiso único no se puede dejar a un
+-- cliente consultar sin darle el archivo, que es el caso normal cuando el estudio
+-- todavía está revisando el periodo.
+--
+-- Los INSERT son idempotentes (`ON DUPLICATE KEY UPDATE`): re-correr el bloque sobre
+-- una base que ya lo tiene no duplica ni rompe nada.
+
+INSERT INTO `sis_modulo` (`nombre`, `etiqueta`, `estado_registro`)
+SELECT 'SIRE_CLIENTE', 'SIRE Cliente', 'ACTIVO'
+WHERE NOT EXISTS (SELECT 1 FROM `sis_modulo` WHERE `nombre` = 'SIRE_CLIENTE');
+
+SET @id_modulo_sire_cliente = (SELECT id_modulo FROM sis_modulo WHERE nombre = 'SIRE_CLIENTE');
+
+INSERT INTO `sis_accion` (`id_modulo`, `codigo_accion`, `descripcion`, `tipo_operacion`, `estado_registro`) VALUES
+(@id_modulo_sire_cliente, 'ver_sire_cliente',       'Ver los registros de ventas (RVIE) y compras (RCE) de su propia empresa', 'READ', 'ACTIVO'),
+(@id_modulo_sire_cliente, 'descargar_sire_cliente', 'Descargar el archivo original de SUNAT de su registro SIRE',              'READ', 'ACTIVO')
+ON DUPLICATE KEY UPDATE `descripcion` = VALUES(`descripcion`), `estado_registro` = 'ACTIVO';
+
+-- El rol 1 las recibe por convención del proyecto (para que la pantalla de permisos
+-- las muestre marcadas), aunque el bypass del guard lo deja pasar igual.
+INSERT INTO `sis_permiso` (`id_rol`, `id_accion`, `estado_registro`)
+SELECT 1, id_accion, 'ACTIVO' FROM sis_accion
+WHERE id_modulo = @id_modulo_sire_cliente
+ON DUPLICATE KEY UPDATE `estado_registro` = 'ACTIVO';
+
+-- El rol CLIENTE las recibe todas: es exactamente para lo que existe el portal.
+INSERT INTO `sis_permiso` (`id_rol`, `id_accion`, `estado_registro`)
+SELECT (SELECT id_rol FROM sis_rol WHERE nombre = 'CLIENTE'), id_accion, 'ACTIVO'
+FROM sis_accion
+WHERE id_modulo = @id_modulo_sire_cliente
 ON DUPLICATE KEY UPDATE `estado_registro` = 'ACTIVO';
 
 -- ==============================================================================
@@ -13100,6 +13534,99 @@ ON DUPLICATE KEY UPDATE `nombre` = VALUES(`nombre`);
 --     COMMENT 'Cómo se interpretó el básico en ESTE cálculo'
 --     AFTER `snap_sueldo_basico`;
 
+-- 2026-09-04 · La caja chica del portal es de la EMPRESA: fuera el circuito de revisión
+--
+-- Qué cambió y por qué: el portal del cliente no es una bandeja de pedidos al estudio.
+-- La caja chica la abre la empresa, la maneja la empresa y la rinde la empresa; el
+-- estudio valida por su lado, en su sistema. Con eso, el circuito "el cliente carga y el
+-- estudio aprueba" quedó sin nadie que lo use: todo movimiento del portal cuenta para el
+-- saldo en el acto, igual que uno cargado desde la intranet.
+--
+-- Sobre una base NUEVA no hace falta nada: el CREATE TABLE de la sección 10 ya va sin
+-- las columnas de revisión y el bloque de permisos ya trae las acciones del portal.
+--
+-- Sobre una base que YA está corriendo:
+--
+--   1. Correr el bloque de acciones y permisos de `CAJAS_CLIENTE` de la sección 10. Es
+--      idempotente (ON DUPLICATE KEY UPDATE) y el INSERT ... SELECT de `sis_permiso` no
+--      lleva lista de códigos, así que las acciones nuevas quedan asignadas solas al
+--      rol 1 y al rol CLIENTE. Sin esto, los endpoints nuevos devuelven 403 y los
+--      botones no aparecen: el frontend los dibuja según `sis_permiso`.
+--
+--   2. Dar de baja la acción de revisión del estudio, que ya no tiene endpoint:
+--
+--      UPDATE `sis_accion` a
+--        INNER JOIN `sis_modulo` m ON m.id_modulo = a.id_modulo
+--        SET a.estado_registro = 'ELIMINADO'
+--        WHERE m.nombre = 'TESORERIA' AND a.codigo_accion = 'revisar_movimiento_caja';
+--
+--   3. ⚠️ ANTES de soltar las columnas, aprobar lo que haya quedado a medias, o esos
+--      movimientos pasan a contar para el saldo de golpe al desaparecer la condición:
+--
+--      SELECT id_movimiento, id_caja, tipo, monto, fecha, revision
+--        FROM `caja_chica_movimiento` WHERE revision <> 'APROBADO';
+--
+--      Lo que estuviera RECHAZADO hay que anularlo (no borrarlo), porque sin la columna
+--      volvería a ser plata:
+--
+--      UPDATE `caja_chica_movimiento`
+--        SET estado = 'ANULADO', motivo_anulacion = 'Rechazado por el estudio'
+--        WHERE revision = 'RECHAZADO' AND estado = 'REGISTRADO';
+--
+--   4. Recién entonces, soltar las columnas y su índice. Van COMENTADOS por la misma
+--      razón que los ALTER anteriores: sobre una base nueva fallarían con "Can't DROP",
+--      cortando la carga entera de bd.sql.
+--
+--      ALTER TABLE `caja_chica_movimiento`
+--        DROP INDEX `idx_mov_revision`,
+--        DROP COLUMN `revision`,
+--        DROP COLUMN `motivo_rechazo`,
+--        DROP COLUMN `id_usuario_revisa`;
+--
+--   5. Recalcular los saldos una vez, porque la definición de "cuenta para el saldo"
+--      cambió (ya no exige `revision = 'APROBADO'`):
+--
+--      UPDATE `caja_chica` cc SET cc.saldo_actual = (
+--        SELECT COALESCE(SUM(CASE WHEN m.tipo = 'INGRESO' THEN m.monto ELSE -m.monto END), 0)
+--          FROM `caja_chica_movimiento` m
+--         WHERE m.id_caja = cc.id_caja AND m.estado = 'REGISTRADO' AND m.estado_registro = 'ACTIVO'
+--      ) WHERE cc.estado_registro = 'ACTIVO';
+
+-- 2026-09-04 · Tableros del portal cliente
+--
+-- Sobre una base NUEVA no hace falta nada: las dos acciones ya están en la sección 11 y
+-- los tableros no crean ni una tabla (solo consultan lo que ya existe).
+--
+-- Sobre una base que YA está corriendo, correr la sección 11 completa. Son cuatro
+-- INSERT idempotentes (`ON DUPLICATE KEY UPDATE`), sin un solo ALTER: se puede correr
+-- las veces que haga falta y en cualquier momento, no necesita ventana.
+--
+-- Sin eso, `GET cliente/tablero` y `GET cliente/tablero/caja` devuelven 403 y los dos
+-- ítems nuevos no aparecen en el sidebar, porque el menú y los botones se dibujan según
+-- `sis_permiso`.
+
+-- 2026-09-08 · PLE (libros anteriores a SIRE) en la pantalla de vencimientos/sire
+--
+-- Sobre una base NUEVA no hace falta nada: todo está en la sección de SIRE.
+--
+-- Sobre una base que YA está corriendo hay que correr TRES cosas de esa sección, y el
+-- ALTER sí necesita atención (los dos INSERT no):
+--
+--   1. CREATE TABLE `ple_libro_presentado`  — tabla nueva, sin riesgo.
+--
+--   2. ALTER TABLE `empresa` ADD COLUMN `sire_desde_periodo` — es un ALTER sobre una
+--      tabla con datos vivos. En MySQL 8 corre como INSTANT (agregar una columna al
+--      final no reescribe la tabla), pero igual conviene fuera de hora. Si se corre
+--      dos veces da "Duplicate column name", que es inofensivo: ya estaba.
+--
+--   3. Los dos INSERT de `sis_accion` + `sis_permiso` (ver_ple_presentado,
+--      sincronizar_ple). Sin ellos la pestaña PLE devuelve 403 aunque el código esté
+--      desplegado, porque los botones se dibujan según `sis_permiso`.
+--
+-- `sire_desde_periodo` arranca en NULL a propósito: NO hay que llenarla a mano para
+-- las ~170 empresas. La primera sincronización PLE de cada empresa la deduce sola —
+-- es el periodo siguiente al último libro que SUNAT devuelve por PLE.
+
 -- ==============================================================================
 
 /*!40101 SET SQL_MODE=@OLD_SQL_MODE */;
@@ -13109,3 +13636,6 @@ ON DUPLICATE KEY UPDATE `nombre` = VALUES(`nombre`);
 /*!40101 SET CHARACTER_SET_RESULTS=@OLD_CHARACTER_SET_RESULTS */;
 /*!40101 SET COLLATION_CONNECTION=@OLD_COLLATION_CONNECTION */;
 /*!40111 SET SQL_NOTES=@OLD_SQL_NOTES */;
+
+-- Esquema reconstruido: se vuelven a exigir las llaves foráneas.
+SET FOREIGN_KEY_CHECKS = 1;

@@ -9,6 +9,7 @@ import { AuditoriaService } from '@app/common';
 import { CredencialesCryptoService } from '@app/security';
 import { GenerarDescargaSireDto } from './sire.dto';
 import { parsearArchivoSire } from './sire-parser.util';
+import { SunatCpeClient } from './sunat-cpe.client';
 
 const COLS_ORDER_ALLOWED = ['id_descarga', 'periodo', 'fecha_generacion'];
 // ⚠️ NUNCA dentro de `uploads/` — esa carpeta se sirve pública sin login vía
@@ -47,6 +48,7 @@ export class SireService {
     private configService: ConfigService,
     private auditoriaService: AuditoriaService,
     private credencialesCrypto: CredencialesCryptoService,
+    private sunatCpeClient: SunatCpeClient,
   ) {}
 
   private async obtenerEmpresa(idEmpresa: number) {
@@ -189,6 +191,77 @@ export class SireService {
       this.dataSource.query(`SELECT COUNT(*) AS total FROM sire_descarga ${whereSql}`, params),
     ]);
     return { data, meta: { total: Number(total), page, limit } };
+  }
+
+  /**
+   * Listado UNIFICADO de libros electrónicos de una empresa: los de SIRE y los de PLE
+   * en una sola grilla, ordenados por periodo.
+   *
+   * Por qué unificado y no dos pantallas: el contador pide "el registro de compras de
+   * tal periodo", no "SIRE" ni "PLE". Qué fuente responde depende de si el periodo cae
+   * antes o después de `empresa.sire_desde_periodo`, y eso es un detalle de
+   * implementación de SUNAT, no algo que él deba saber elegir.
+   *
+   * Las dos tablas se mantienen separadas a propósito (ver el comentario de
+   * `ple_libro_presentado` en bd.sql): SIRE gira alrededor de un ticket y entrega el
+   * detalle de comprobantes; PLE no tiene ticket y solo entrega el acuse. El UNION las
+   * alinea para mostrarlas, sin fingir que son la misma cosa — de ahí la columna
+   * `fuente`, que es lo que el frontend usa para decidir qué acciones ofrecer en cada
+   * fila (traer archivo y ver detalle en SIRE; bajar constancia en PLE).
+   *
+   * `id_origen` NO es único entre fuentes (hay un id_descarga 3 y un id_ple 3): la
+   * identidad de una fila es el par (fuente, id_origen), y así lo trata el frontend.
+   */
+  async findAllLibros(idEmpresa: number, query: any) {
+    const page = Number(query.page) || 1;
+    const limit = Number(query.limit) || 10;
+    const offset = (page - 1) * limit;
+
+    // Filtros aplicados a AMBAS ramas del UNION. Se arman una vez y se pasan dos veces
+    // (una por rama) para que los placeholders queden en el mismo orden que los params.
+    const filtros: string[] = [];
+    const paramsRama: any[] = [];
+    if (query.periodo) { filtros.push('periodo = ?'); paramsRama.push(query.periodo); }
+    if (query.tipo_libro) { filtros.push('tipo_libro = ?'); paramsRama.push(query.tipo_libro); }
+    const filtroSql = filtros.length ? ` AND ${filtros.join(' AND ')}` : '';
+
+    // PLE trae libros que SIRE nunca cubrió (diario, mayor, activos fijos) y esos van
+    // con tipo_libro NULL. Filtrar por RVIE/RCE los deja fuera, que es lo correcto.
+    const ramaSire = `
+      SELECT 'SIRE' AS fuente, id_descarga AS id_origen, periodo, tipo_libro,
+             CAST(NULL AS CHAR(6)) AS cod_libro, estado_ticket AS estado,
+             fecha_generacion AS fecha, archivo_ruta AS archivo,
+             CAST(NULL AS SIGNED) AS fuera_de_plazo
+        FROM sire_descarga
+       WHERE id_empresa = ? AND estado_registro = 'ACTIVO'${filtroSql}`;
+    const ramaPle = `
+      SELECT 'PLE' AS fuente, id_ple AS id_origen, periodo, tipo_libro,
+             cod_libro, 'PRESENTADO' AS estado,
+             fecha_presentacion AS fecha, constancia_ruta AS archivo,
+             fuera_de_plazo
+        FROM ple_libro_presentado
+       WHERE id_empresa = ? AND estado_registro = 'ACTIVO'${filtroSql}`;
+
+    const params = [idEmpresa, ...paramsRama, idEmpresa, ...paramsRama];
+    const [data, [{ total }]] = await Promise.all([
+      this.dataSource.query(
+        `${ramaSire} UNION ALL ${ramaPle} ORDER BY periodo DESC, fuente ASC, cod_libro ASC LIMIT ? OFFSET ?`,
+        [...params, limit, offset],
+      ),
+      this.dataSource.query(`SELECT COUNT(*) AS total FROM (${ramaSire} UNION ALL ${ramaPle}) AS u`, params),
+    ]);
+
+    // El corte viaja con el listado para que la pantalla pueda explicar POR QUÉ un
+    // periodo salió de una fuente u otra, en vez de que el usuario lo adivine.
+    const [empresa] = await this.dataSource.query(
+      `SELECT sire_desde_periodo FROM empresa WHERE id_empresa = ?`,
+      [idEmpresa],
+    );
+
+    return {
+      data,
+      meta: { total: Number(total), page, limit, sire_desde_periodo: empresa?.sire_desde_periodo ?? null },
+    };
   }
 
   // WHERE incluye id_empresa — sin esto, cualquier usuario con acceso a otra empresa
@@ -402,10 +475,124 @@ export class SireService {
       { base_imponible: 0, igv: 0, total: 0 },
     );
 
+    // Solo se piden los ítems de la página visible: traerlos para las ~500 filas de un
+    // período completo sería un JOIN inútil, porque el usuario ve 20 a la vez.
+    const pagina = filtradas.slice(offset, offset + limit);
+    const conItems = await this.adjuntarItems(idEmpresa, pagina);
+
     return {
-      data: filtradas.slice(offset, offset + limit),
+      data: conItems,
       meta: { total: filtradas.length, page, limit },
       resumen,
+    };
+  }
+
+  /**
+   * Cuelga de cada fila del SIRE sus ítems ya sincronizados, si los hay.
+   * `items: []` significa "todavía no se sincronizó" o "no había XML" — el front lo
+   * muestra distinto a un comprobante sin líneas.
+   */
+  private async adjuntarItems(idEmpresa: number, filas: any[]) {
+    if (!filas.length) return filas;
+
+    // Se consulta por serie+número (no por id) porque las filas vienen del TXT de
+    // SUNAT, no de una tabla propia: no tienen id con el que cruzar.
+    const condiciones = filas.map(() => '(serie = ? AND numero = ?)').join(' OR ');
+    const parametros: any[] = [idEmpresa];
+    filas.forEach((f) => parametros.push(f.serie, f.numero));
+
+    const items = await this.dataSource.query(
+      `SELECT serie, numero, nro_linea, codigo_producto, descripcion, cantidad,
+              unidad_medida, precio_unitario, importe
+         FROM sire_comprobante_item
+        WHERE id_empresa = ? AND estado_registro = 'ACTIVO' AND (${condiciones})
+        ORDER BY serie, numero, nro_linea`,
+      parametros,
+    );
+
+    const porComprobante = new Map<string, any[]>();
+    for (const it of items) {
+      const clave = `${it.serie}-${it.numero}`;
+      if (!porComprobante.has(clave)) porComprobante.set(clave, []);
+      porComprobante.get(clave)!.push({
+        ...it,
+        cantidad: Number(it.cantidad),
+        precio_unitario: Number(it.precio_unitario),
+        importe: Number(it.importe),
+      });
+    }
+    return filas.map((f) => ({ ...f, items: porComprobante.get(`${f.serie}-${f.numero}`) || [] }));
+  }
+
+  /**
+   * Baja de SUNAT el detalle de ítems de los comprobantes EMITIDOS del período y lo
+   * guarda. Es lo que llena la columna de detalle en la pantalla del SIRE.
+   *
+   * ⚠️ Solo cubre VENTAS, y solo de empresas que emiten por SEE-SOL (serie E###).
+   * El motivo y las alternativas descartadas están documentados en sunat-cpe.client.ts.
+   * Las COMPRAS no se pueden hoy: el módulo de SUNAT que las daría devuelve 404.
+   */
+  async sincronizarItemsVentas(idEmpresa: number, periodo: string, idUsuario: number) {
+    if (!/^\d{6}$/.test(periodo)) throw new BadRequestException('El período debe tener formato AAAAMM');
+    const empresa = await this.obtenerEmpresa(idEmpresa);
+    if (!empresa.sunat_sol_usuario || !empresa.sunat_sol_password) {
+      throw new BadRequestException('Falta configurar usuario/clave SOL de esta empresa (Empresas → Credenciales SUNAT)');
+    }
+
+    // El servlet de SUNAT filtra por rango de fechas, no por período tributario.
+    const anio = Number(periodo.slice(0, 4));
+    const mes = Number(periodo.slice(4, 6));
+    const ultimoDia = new Date(anio, mes, 0).getDate(); // día 0 del mes siguiente = último del actual
+    const dd = (n: number) => String(n).padStart(2, '0');
+    const desde = `01/${dd(mes)}/${anio}`;
+    const hasta = `${dd(ultimoDia)}/${dd(mes)}/${anio}`;
+
+    const comprobantes = await this.sunatCpeClient.descargarItemsDeVentas(
+      String(empresa.ruc).trim(),
+      this.credencialesCrypto.descifrar(empresa.sunat_sol_usuario).trim(),
+      this.credencialesCrypto.descifrar(empresa.sunat_sol_password).trim(),
+      desde, hasta,
+    );
+
+    let filasGuardadas = 0;
+    for (const cp of comprobantes) {
+      for (const it of cp.items) {
+        // Upsert por la clave única: reprocesar un período no duplica ni deja huérfanos.
+        await this.dataSource.query(
+          `INSERT INTO sire_comprobante_item
+             (id_empresa, tipo_doc, serie, numero, fecha_emision, nro_linea, codigo_producto,
+              descripcion, cantidad, unidad_medida, precio_unitario, importe)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON DUPLICATE KEY UPDATE
+             fecha_emision = VALUES(fecha_emision), codigo_producto = VALUES(codigo_producto),
+             descripcion = VALUES(descripcion), cantidad = VALUES(cantidad),
+             unidad_medida = VALUES(unidad_medida), precio_unitario = VALUES(precio_unitario),
+             importe = VALUES(importe), fecha_sincronizacion = NOW(), estado_registro = 'ACTIVO'`,
+          [
+            idEmpresa, cp.tipo_doc, cp.serie, cp.numero, cp.fecha_emision, it.nro_linea,
+            it.codigo_producto, it.descripcion.slice(0, 500), it.cantidad, it.unidad_medida,
+            it.precio_unitario, it.importe,
+          ],
+        );
+        filasGuardadas++;
+      }
+    }
+
+    await this.auditoriaService.registrar(
+      'sire_comprobante_item', idEmpresa, 'CREAR', idUsuario, null,
+      { periodo, comprobantes: comprobantes.length, items: filasGuardadas },
+    );
+
+    return {
+      periodo,
+      comprobantes: comprobantes.length,
+      items: filasGuardadas,
+      // Sin comprobantes casi siempre significa que la empresa NO emite por SEE-SOL.
+      // Decirlo acá evita que el usuario crea que el sistema falló en silencio.
+      mensaje: comprobantes.length
+        ? `Se sincronizaron ${filasGuardadas} ítem(s) de ${comprobantes.length} comprobante(s).`
+        : 'SUNAT no devolvió comprobantes emitidos en este período. Si la empresa emite con serie F### '
+          + '(sistema propio u OSE), sus XML no están en el portal SOL y hay que integrar con su facturador.',
     };
   }
 }

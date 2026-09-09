@@ -1,5 +1,5 @@
 import {
-  IsString, IsNotEmpty, IsOptional, IsInt, IsNumber, IsIn, Min, MaxLength, IsDateString, ValidateIf,
+  IsString, IsNotEmpty, IsOptional, IsInt, IsNumber, IsIn, Min, MaxLength, IsDateString,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 
@@ -142,21 +142,4 @@ export class UpdateMovimientoCajaDto {
 export class AnularMovimientoCajaDto {
   @IsString() @IsNotEmpty() @MaxLength(255)
   motivo!: string;
-}
-
-/**
- * Revisión de un gasto cargado desde el PORTAL CLIENTE.
- *
- * `RECHAZADO` exige motivo y `APROBADO` no lo acepta: el motivo es lo único que le dice
- * al cliente qué corregir, y un "aprobado porque sí" solo ensucia el registro. El
- * `@ValidateIf` es lo que hace que la regla la aplique el DTO y no el service — sin él,
- * un rechazo sin motivo llegaría hasta la query y reventaría con un 500 genérico.
- */
-export class RevisarMovimientoCajaDto {
-  @IsIn(['APROBADO', 'RECHAZADO'])
-  decision!: string;
-
-  @ValidateIf((o) => o.decision === 'RECHAZADO')
-  @IsString() @IsNotEmpty({ message: 'Al rechazar un gasto hay que decir por qué' }) @MaxLength(255)
-  motivo?: string;
 }

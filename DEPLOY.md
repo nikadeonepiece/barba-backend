@@ -153,8 +153,8 @@ La primera vez pregunta por la huella del servidor: responder `yes`.
 └── api/
     ├── main.js          <- esto reemplaza el deploy del backend
     ├── package.json  package-lock.json  node_modules/
-    ├── .htaccess        <- lo escribe cPanel: config de Passenger + las variables
-    │                       de entorno (ahí van las contraseñas). No editar a mano.
+    ├── .htaccess        <- monta la app: sin el bloque Passenger de acá, /api no
+    │                       existe para el servidor. Ver "Si /api devuelve 404".
     ├── tmp/             <- touch tmp/restart.txt reinicia (= botón Restart de cPanel)
     ├── stderr.log       <- acá salen los errores
     └── storage-privado/  logs/  uploads/   <- archivos de clientes, no se tocan
@@ -189,7 +189,7 @@ archivos** y los scripts de `package.json`.
 
 | Campo | Valor |
 |---|---|
-| Node.js version | `24.19.0` |
+| Node.js version | `24.20.0` |
 | Application mode | `Production` |
 | Application root | `barba.difusioneslaborales.com/api` |
 | Application URL | `barba.difusioneslaborales.com` + `api` |
@@ -281,6 +281,90 @@ Hoy no rompe nada porque el cron está apagado (`ENABLE_SUNAT_SYNC_CRON=false`) 
 esas rutas se disparan a mano. Antes de encender el cron hay que resolverlo: o
 esas tareas corren desde una PC/VPS, o se reemplaza el scraping por la API de
 SIRE. `npm install` sí funciona: el paquete instala, lo que falta es el navegador.
+
+---
+
+## Si `/api` devuelve 404
+
+Lo primero es mirar **qué tipo de 404** es, porque eso solo ya dice dónde está el
+problema:
+
+```bash
+curl -s -o /dev/null -w "%{http_code} %{content_type}\n" \
+  -X POST https://barba.difusioneslaborales.com/api/auth/login \
+  -H "Content-Type: application/json" -d "{}"
+```
+
+| Respuesta | Qué significa |
+|---|---|
+| `400 application/json` | **Está todo bien.** Es Nest validando el body vacío: la API responde. |
+| `404 text/html` | Passenger no está montado. La petición nunca llegó a Node, la contesta LiteSpeed. |
+| `404 application/json` | Sí llegó a Nest, pero la ruta no existe. Revisar `API_PREFIX` contra el `setGlobalPrefix`. |
+
+Otra señal de lo mismo: si `https://barba.difusioneslaborales.com/api/main.js`
+**se descarga** (200, ~1,9 MB), el servidor está tratando `api/` como una carpeta
+de archivos estáticos, que es justo lo que hace cuando la app no está montada.
+
+### Reponer el bloque de Passenger
+
+El `.htaccess` de `api/` es lo que le dice al servidor que esa URI es una app Node.
+Usar la interfaz de *Setup Node.js App* puede dejarlo **vacío (0 bytes)**, y a
+partir de ahí ni *Restart* ni *Save* lo regeneran. Ojo con esto al diagnosticar:
+`cloudlinux-selector restart` devuelve `{"result": "success"}` con el sitio caído,
+porque el proceso Node arranca perfecto — lo que falta es el enrutamiento hacia él.
+
+Cuando pasa, hay que escribirlo a mano. Son estas seis líneas y nada más:
+
+```apache
+# DO NOT REMOVE. CLOUDLINUX PASSENGER CONFIGURATION BEGIN
+PassengerAppRoot "/home/difusion/barba.difusioneslaborales.com/api"
+PassengerBaseURI "/api"
+PassengerNodejs "/home/difusion/nodevenv/barba.difusioneslaborales.com/api/24/bin/node"
+PassengerAppType node
+PassengerStartupFile main.js
+# DO NOT REMOVE. CLOUDLINUX PASSENGER CONFIGURATION END
+```
+
+**Las variables de entorno no hacen falta en este archivo.** cPanel a veces las
+escribe ahí como `SetEnv`, pero la app anda igual sin ellas: se las pasa el selector
+de CloudLinux desde su propia configuración. Los valores de producción se siguen
+editando en *Setup Node.js App* → *Environment variables*.
+
+Para verificar:
+
+```bash
+ssh barba "grep -c Passenger ~/barba.difusioneslaborales.com/api/.htaccess"
+```
+
+Tiene que devolver `5`. Si devuelve `0`, el bloque no está.
+
+Si hubiera que rearmarlo desde cero, los otros proyectos del hosting sirven de
+molde: `app.transportesmontero.com/montero-api/.htaccess` tiene el mismo bloque con
+sus propias rutas.
+
+⚠️ Escribir ese archivo desde Windows **con saltos de línea LF**. Un `\r` al final
+de una línea `SetEnv` entra dentro del valor y deja, por ejemplo, una contraseña de
+base de datos que no coincide con ninguna.
+
+**Lo que NO es**: el `.htaccess` de la raíz del dominio (el que sube el intranet)
+no tiene nada que ver. Su regla sobre `/api` es un `RewriteRule ^ - [L]`, o sea
+"dejá pasar esto sin tocarlo", y es correcta. Si esa regla fuera el problema,
+`/api/main.js` devolvería el `index.html` de Angular en vez del archivo real.
+
+### El código del backend queda descargable
+
+Passenger sirve los archivos que existan en la carpeta antes de pasarle la petición
+a la app, así que `main.js` y `package.json` se bajan por HTTP desde internet. Las
+contraseñas no se exponen —`.htaccess` da 403 y los `.log` 404— pero el código
+compilado sí. Se cierra agregando al mismo `.htaccess`:
+
+```apache
+<FilesMatch "^(main\.js|package(-lock)?\.json)$">
+  Require all denied
+</FilesMatch>
+```
+
+No interfiere con la app: Passenger lee `main.js` del disco, no por HTTP.
 
 ---
 

@@ -5,8 +5,9 @@ import type { Response } from 'express';
 import { AuditoriaService } from '@app/common';
 import { MotorCalculoService } from './motor-calculo.service';
 import { BoletaPdfService } from './boleta-pdf.service';
+import { BoletasFirmadasArchivoService } from './boletas-firmadas-archivo.service';
 import {
-  CreatePlanillaDto, CreateEntradaDatoDto, GuardarTareoDto,
+  CreatePlanillaDto, CreateEntradaDatoDto, GuardarTareoDto, RegistrarBoletaFirmadaDto,
 } from './dto/planilla.dto';
 
 const num = (v: any): number => (v === null || v === undefined ? 0 : Number(v));
@@ -19,6 +20,7 @@ export class PlanillasService {
     private auditoriaService: AuditoriaService,
     private motor: MotorCalculoService,
     private boletaPdf: BoletaPdfService,
+    private boletasFirmadas: BoletasFirmadasArchivoService,
   ) {}
 
   // ==========================================================================
@@ -442,6 +444,162 @@ export class PlanillasService {
   async exportarBoletaPdf(idPlanilla: number, idTrabajador: number, res: Response) {
     const boleta = await this.findBoleta(idPlanilla, idTrabajador);
     await this.boletaPdf.generar(boleta, res);
+  }
+
+  // ==========================================================================
+  // Boletas FIRMADAS — el cargo de entrega escaneado
+  // ==========================================================================
+  // La boleta que emite el sistema no se archiva: se regenera idéntica desde
+  // `planilla_detalle`. Lo que sí se archiva es el papel FIRMADO, que no se puede
+  // regenerar porque la firma no está en ninguna tabla. Es la prueba de entrega que
+  // exige el D.S. 001-98-TR. Mismo criterio que `planilla_contrato`.
+
+  /**
+   * Las firmadas de un periodo, indexadas por trabajador para que la pantalla pinte
+   * el estado de cada fila del detalle sin una consulta por trabajador (N+1).
+   */
+  async findFirmadas(idPlanilla: number) {
+    await this.findOne(idPlanilla);
+    return this.dataSource.query(
+      `SELECT f.id_boleta_firmada, f.id_trabajador, f.archivo_nombre, f.archivo_tamano,
+              f.fecha_entrega, f.observaciones, f.id_usuario_crea,
+              CONCAT_WS(' ', u.nombres, u.apellidos) AS subido_por
+       FROM planilla_boleta_firmada f
+       LEFT JOIN sis_usuario u ON u.id_usuario = f.id_usuario_crea
+       WHERE f.id_planilla = ? AND f.estado_registro = 'ACTIVO'
+       ORDER BY f.id_trabajador`,
+      [idPlanilla],
+    );
+  }
+
+  /**
+   * Paso 2 de la carga: registra el PDF que el paso 1 ya dejó en disco.
+   *
+   * Volver a subir REEMPLAZA, no agrega: el UNIQUE (id_planilla, id_trabajador) solo
+   * admite una fila, y una fila dada de baja se REACTIVA en vez de insertar otra. Sin
+   * eso, un segundo escaneo dejaría dos filas y nadie sabría cuál es la buena.
+   * El PDF viejo se borra de disco recién DESPUÉS del UPDATE: si el UPDATE falla, el
+   * archivo que sigue referenciado en BD tiene que seguir existiendo.
+   */
+  async registrarFirmada(idPlanilla: number, dto: RegistrarBoletaFirmadaDto, userId: number) {
+    const planilla = await this.findOne(idPlanilla);
+
+    // El trabajador tiene que estar EN esta planilla. Sin esta comprobación se podría
+    // archivar la boleta de alguien de otra empresa mandando su id a mano, y quedaría
+    // colgada de un periodo al que nunca perteneció.
+    const [detalle] = await this.dataSource.query(
+      `SELECT d.id_detalle FROM planilla_detalle d
+       WHERE d.id_planilla = ? AND d.id_trabajador = ? AND d.estado_registro = 'ACTIVO'`,
+      [idPlanilla, dto.id_trabajador],
+    );
+    if (!detalle) {
+      throw new BadRequestException(
+        'Ese trabajador no figura en el detalle calculado de esta planilla. Calculá el periodo antes de archivar su boleta firmada.',
+      );
+    }
+
+    // Confirma que el PDF exista en disco y mide su tamaño real. Con una ruta
+    // inventada, la fila quedaría apuntando a la nada y el error recién saldría el día
+    // que alguien intente descargarla.
+    const tamano = this.boletasFirmadas.tamanoReal(dto.archivo_ruta);
+
+    const [existente] = await this.dataSource.query(
+      `SELECT id_boleta_firmada, archivo_ruta, estado_registro
+       FROM planilla_boleta_firmada
+       WHERE id_planilla = ? AND id_trabajador = ?`,
+      [idPlanilla, dto.id_trabajador],
+    );
+
+    if (existente) {
+      await this.dataSource.query(
+        `UPDATE planilla_boleta_firmada
+            SET archivo_ruta = ?, archivo_nombre = ?, archivo_tamano = ?,
+                fecha_entrega = ?, observaciones = ?,
+                estado_registro = 'ACTIVO', id_usuario_mod = ?
+          WHERE id_boleta_firmada = ?`,
+        [
+          dto.archivo_ruta.trim(), dto.archivo_nombre.trim(), tamano,
+          dto.fecha_entrega || null, dto.observaciones?.trim() || null,
+          userId, existente.id_boleta_firmada,
+        ],
+      );
+
+      // Recién ahora: la fila ya no lo referencia.
+      if (existente.archivo_ruta !== dto.archivo_ruta.trim()) {
+        this.boletasFirmadas.borrarSiExiste(existente.archivo_ruta);
+      }
+
+      await this.auditoriaService.registrar(
+        'planilla_boleta_firmada', existente.id_boleta_firmada, 'ACTUALIZAR', userId,
+        { archivo_nombre: existente.archivo_ruta },
+        { archivo_nombre: dto.archivo_nombre, id_trabajador: dto.id_trabajador, id_planilla: idPlanilla },
+      );
+
+      return { id: existente.id_boleta_firmada, mensaje: 'Boleta firmada reemplazada' };
+    }
+
+    const res: any = await this.dataSource.query(
+      `INSERT INTO planilla_boleta_firmada
+         (id_planilla, id_trabajador, id_empresa, archivo_ruta, archivo_nombre,
+          archivo_tamano, fecha_entrega, observaciones, id_usuario_crea)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        idPlanilla, dto.id_trabajador, planilla.id_empresa,
+        dto.archivo_ruta.trim(), dto.archivo_nombre.trim(), tamano,
+        dto.fecha_entrega || null, dto.observaciones?.trim() || null, userId,
+      ],
+    );
+
+    const id = Number(res.insertId);
+    await this.auditoriaService.registrar('planilla_boleta_firmada', id, 'CREAR', userId, null, {
+      id_planilla: idPlanilla, id_trabajador: dto.id_trabajador, archivo_nombre: dto.archivo_nombre,
+    });
+
+    return { id, mensaje: 'Boleta firmada archivada' };
+  }
+
+  /** Lee la fila y falla claro si no está — la usan descargar y eliminar. */
+  private async findFirmadaOFalla(idPlanilla: number, idTrabajador: number) {
+    const [row] = await this.dataSource.query(
+      `SELECT id_boleta_firmada, archivo_ruta, archivo_nombre
+       FROM planilla_boleta_firmada
+       WHERE id_planilla = ? AND id_trabajador = ? AND estado_registro = 'ACTIVO'`,
+      [idPlanilla, idTrabajador],
+    );
+    if (!row) throw new NotFoundException('Este trabajador no tiene una boleta firmada archivada en este periodo');
+    return row;
+  }
+
+  async descargarFirmada(idPlanilla: number, idTrabajador: number, res: Response) {
+    const firmada = await this.findFirmadaOFalla(idPlanilla, idTrabajador);
+    this.boletasFirmadas.enviarPdf(firmada.archivo_ruta, firmada.archivo_nombre, res);
+  }
+
+  /**
+   * Baja lógica, y el PDF se queda en disco a propósito: es prueba documental de una
+   * entrega que ya ocurrió. Si se borrara el archivo, un clic equivocado destruiría lo
+   * único que respalda esa entrega ante SUNAFIL. El reemplazo sí borra el anterior,
+   * porque ahí hay un escaneo nuevo del mismo papel.
+   */
+  async eliminarFirmada(idPlanilla: number, idTrabajador: number, userId: number) {
+    const firmada = await this.findFirmadaOFalla(idPlanilla, idTrabajador);
+
+    const res: any = await this.dataSource.query(
+      `UPDATE planilla_boleta_firmada
+          SET estado_registro = 'ELIMINADO', id_usuario_mod = ?
+        WHERE id_boleta_firmada = ? AND estado_registro = 'ACTIVO'`,
+      [userId, firmada.id_boleta_firmada],
+    );
+    if (res.affectedRows === 0) {
+      throw new NotFoundException('Este trabajador no tiene una boleta firmada archivada en este periodo');
+    }
+
+    await this.auditoriaService.registrar(
+      'planilla_boleta_firmada', firmada.id_boleta_firmada, 'ELIMINAR', userId,
+      { archivo_nombre: firmada.archivo_nombre }, null,
+    );
+
+    return { mensaje: 'Boleta firmada dada de baja' };
   }
 
   async findProvisiones(idPlanilla: number) {

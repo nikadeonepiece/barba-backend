@@ -1,6 +1,6 @@
 import {
   IsInt, Min, Max, IsOptional, IsIn, IsString, MaxLength, IsNumber,
-  IsArray, ValidateNested,
+  IsArray, ValidateNested, IsDateString, IsNotEmpty,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 
@@ -50,4 +50,26 @@ export class GuardarTareoDto {
   @ValidateNested({ each: true })
   @Type(() => DiaTareoDto)
   dias!: DiaTareoDto[];
+}
+
+/**
+ * Paso 2 de la carga de una boleta firmada: los datos, ya con el PDF en disco.
+ *
+ * Se separa del `POST .../subir` (paso 1) por lo mismo que en contratos: en
+ * `multipart/form-data` todos los campos llegan como string y `@IsInt()`/
+ * `@IsDateString()` dejarían de validar nada.
+ *
+ * `id_planilla` NO va acá: viene del `:id` de la URL. Aceptarlo también en el body
+ * dejaría dos fuentes para el mismo dato y la posibilidad de que no coincidan.
+ */
+export class RegistrarBoletaFirmadaDto {
+  @IsInt() @Min(1) id_trabajador!: number;
+
+  @IsString() @IsNotEmpty() @MaxLength(255) archivo_ruta!: string;
+  @IsString() @IsNotEmpty() @MaxLength(255) archivo_nombre!: string;
+
+  /** Cuándo firmó el trabajador — no cuándo se subió el escaneo. */
+  @IsOptional() @IsDateString() fecha_entrega?: string;
+
+  @IsOptional() @IsString() @MaxLength(255) observaciones?: string;
 }

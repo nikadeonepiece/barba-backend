@@ -260,7 +260,12 @@ export class SunatTregistroScrapingClient {
         // La traza dice si el fallo fue de SUNAT (5xx suyo) o nuestro (404/400 por un
         // selector mal puesto). Distinguir eso a ojo costó varias corridas.
         if (traza.length) diagnostico.push(`Tráfico con SUNAT: ${traza.slice(-12).join(' · ')}`);
-        await this.guardarEvidencia(page, 'login', diagnostico);
+        // OJO: la ventana del login es una PESTAÑA NUEVA — `page` se queda en sol.html.
+        // Pasando `page` la evidencia era siempre una foto de la portada de SUNAT, que
+        // no dice nada del login: dos corridas del 04/09/2026 guardaron exactamente el
+        // mismo PNG de 190213 bytes mientras el error real estaba en la otra pestaña.
+        const vivas = context.pages().filter((p: Page) => !p.isClosed());
+        await this.guardarEvidencia(vivas[vivas.length - 1] ?? page, 'login', diagnostico);
         throw e;
       }
       if (traza.length) diagnostico.push(`Tráfico con SUNAT: ${traza.slice(-12).join(' · ')}`);
@@ -356,11 +361,17 @@ export class SunatTregistroScrapingClient {
     const frameLogin = await this.esperarFrameLogin(popup, s, diagnostico);
 
     // La pestaña RUC/DNI también vive dentro del iframe.
-    await frameLogin.click(s.BOTON_POR_RUC).catch(() => {});
+    await this.activarPestanaRuc(frameLogin, s, diagnostico);
 
     await frameLogin.fill(s.INPUT_RUC, ruc);
     await frameLogin.fill(s.INPUT_USUARIO, usuario);
     await frameLogin.fill(s.INPUT_CLAVE, clave);
+
+    // Última verificación antes de gastar el intento: que los tres campos sigan con
+    // valor y que la pestaña siga en RUC. `formularioReinicia()` —que corre dentro
+    // del handler de #btnPorRuc— vacía los tres inputs, así que si el binding de
+    // jQuery llegó tarde y el clic se aplicó DESPUÉS del llenado, acá salen vacíos.
+    await this.verificarFormularioListo(frameLogin, s, diagnostico);
 
     // ⚠️ EL SUBMIT VA DENTRO DEL IFRAME, no en la página padre.
     //
@@ -419,10 +430,33 @@ export class SunatTregistroScrapingClient {
       const sello = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
       const base = path.join(carpeta, `${sello}-${etapa}`);
 
-      await page.screenshot({ path: `${base}.png`, fullPage: true }).catch(() => {});
-      await fs.writeFile(`${base}.html`, await page.content().catch(() => ''), 'utf8');
+      // Se informa SOLO lo que se llegó a escribir. Antes se anunciaban las dos rutas
+      // pase lo que pase, y con la ventana ya cerrada eso mandó a abrir un .png que no
+      // existía y un .html de 0 bytes (04/09/2026). Un diagnóstico que miente sobre su
+      // propia evidencia hace perder más tiempo que uno que no dice nada.
+      if (page.isClosed()) {
+        diagnostico.push('No se pudo guardar evidencia: la ventana ya estaba cerrada.');
+        return;
+      }
 
-      diagnostico.push(`Evidencia guardada en logs/tregistro/${sello}-${etapa}.png y .html`);
+      const guardados: string[] = [];
+      const ok = await page
+        .screenshot({ path: `${base}.png`, fullPage: true })
+        .then(() => true)
+        .catch(() => false);
+      if (ok) guardados.push(`${sello}-${etapa}.png`);
+
+      const html = await page.content().catch(() => '');
+      if (html) {
+        await fs.writeFile(`${base}.html`, html, 'utf8');
+        guardados.push(`${sello}-${etapa}.html`);
+      }
+
+      diagnostico.push(
+        guardados.length
+          ? `Evidencia guardada en logs/tregistro/: ${guardados.join(' y ')}`
+          : 'No se pudo guardar evidencia: la pantalla no devolvió ni captura ni HTML.',
+      );
     } catch (e: any) {
       diagnostico.push(`No se pudo guardar la evidencia: ${e?.message ?? e}`);
     }
@@ -486,6 +520,148 @@ export class SunatTregistroScrapingClient {
   }
 
   /**
+   * Deja el formulario en la pestaña "RUC" y NO sigue hasta COMPROBARLO.
+   *
+   * La pantalla de login son DOS formularios, no uno:
+   *
+   *   <form role="form">                          ← el visible, SIN action
+   *      #txtRuc  #txtUsuario  #txtContrasena  #btnAceptar (type="button")
+   *
+   *   <form name="LoginForm" action="j_security_check" method="POST">   ← el real
+   *      ocultos: tipo · dni · custom_ruc · j_username · j_password
+   *
+   * El puente entre los dos es la función `login()` de la página, que copia visible →
+   * oculto y, sobre todo, setea:
+   *
+   *     $("#tipo").val(tipoLogueo)      // 1 = por DNI, 2 = por RUC
+   *
+   * `tipoLogueo` arranca en 2 y solo cambia desde los handlers de #btnPorRuc y
+   * #btnPorDni, que jQuery ata dentro de `inciaBotones()`. Y jQuery se descarga de
+   * OTRO host (jslibs1.sunat.gob.pe), así que llega bastante después del HTML.
+   *
+   * Ahí estaba el fallo del 04/09/2026: `esperarFrameLogin` solo exige que #txtRuc
+   * EXISTA —cierto apenas se parsea el HTML—, el clic a #btnPorRuc caía antes del
+   * binding y se perdía, y un `.catch(() => {})` lo tapaba. El formulario se enviaba
+   * con `tipo` vacío y SUNAT contestaba, con toda razón:
+   *   "Falla en la autenticación. DNI y/o contraseña son incorrectos o no existen."
+   * Un error de DNI para un login por RUC. Eso mandó a revisar la Clave SOL, que
+   * estaba perfecta: entrando a mano el mismo usuario funcionaba sin drama.
+   *
+   * Por eso acá no se asume nada: se espera a que el JS esté vivo, se hace el clic y
+   * después se le PREGUNTA a la página en qué pestaña quedó.
+   */
+  private async activarPestanaRuc(
+    frameLogin: Frame, s: typeof SunatTregistroScrapingClient.SELECTORES, diagnostico: string[],
+  ): Promise<void> {
+    // 1) Esperar a que la pantalla esté inicializada: que exista `login()`, que exista
+    //    `tipoLogueo` y que jQuery YA tenga atado el click de la pestaña. Sin las tres
+    //    cosas el clic es un no-op silencioso.
+    try {
+      await frameLogin.waitForFunction(
+        () => {
+          const w = window as any;
+          if (typeof w.login !== 'function' || typeof w.tipoLogueo === 'undefined') return false;
+          const btn = document.getElementById('btnPorRuc');
+          if (!w.jQuery || !btn || !w.jQuery._data) return false;
+          const eventos = w.jQuery._data(btn, 'events');
+          return !!(eventos && eventos.click);
+        },
+        undefined,
+        { timeout: 20_000 },
+      );
+    } catch {
+      diagnostico.push(
+        'AVISO — el JS del formulario de SUNAT no terminó de inicializarse en 20s. Se sigue igual, ' +
+        'pero si el login falla con "DNI y/o contraseña incorrectos", el motivo es este.',
+      );
+    }
+
+    // 2) Recién ahora el clic hace algo.
+    await frameLogin.click(s.BOTON_POR_RUC).catch(() => {});
+
+    // 3) Y se verifica. Un clic sin error NO es un clic que surtió efecto.
+    const estado = await frameLogin
+      .evaluate(() => {
+        const btn = document.getElementById('btnPorRuc');
+        const filaDni = document.getElementById('divFilaDni');
+        return {
+          tipoLogueo: (window as any).tipoLogueo ?? null,
+          activa: !!btn?.classList.contains('active'),
+          dniOculto: !filaDni || getComputedStyle(filaDni).display === 'none',
+        };
+      })
+      .catch(() => null);
+
+    if (!estado || estado.tipoLogueo !== 2 || !estado.activa || !estado.dniOculto) {
+      throw new Error(
+        'El formulario de SUNAT no quedó en la pestaña "RUC" ' +
+        `(tipoLogueo=${estado?.tipoLogueo ?? 'desconocido'}, botón activo=${estado?.activa ?? '?'}, ` +
+        `fila DNI oculta=${estado?.dniOculto ?? '?'}). Enviarlo así hace que SUNAT lo lea como ` +
+        'login por DNI y conteste "DNI y/o contraseña son incorrectos", aunque la Clave SOL esté bien.',
+      );
+    }
+
+    diagnostico.push('OK — formulario en la pestaña "RUC" (tipoLogueo=2), con su JS ya inicializado');
+  }
+
+  /**
+   * Relee el formulario JUSTO antes de enviarlo.
+   *
+   * Dos motivos, los dos aprendidos a costa de intentos contra el WAF:
+   *
+   *   1. El handler de #btnPorRuc empieza llamando a `formularioReinicia()`, que VACÍA
+   *      los tres inputs. Si el binding de jQuery llegó tarde y ese clic terminó
+   *      aplicándose después del llenado, se enviaría todo en blanco.
+   *   2. `login()` valida del lado del cliente —usuario ≥ 8, clave ≥ 6— y si no se
+   *      cumple muestra un cartel y NO envía nada. El scraper se quedaba esperando una
+   *      navegación que nunca iba a ocurrir, hasta agotar el timeout de 30s.
+   *
+   * Solo se miran LARGOS, nunca valores: esto va al diagnóstico que se muestra en la UI.
+   */
+  private async verificarFormularioListo(
+    frameLogin: Frame, s: typeof SunatTregistroScrapingClient.SELECTORES, diagnostico: string[],
+  ): Promise<void> {
+    const estado = await frameLogin
+      .evaluate(() => {
+        const largo = (id: string) =>
+          ((document.getElementById(id) as HTMLInputElement | null)?.value ?? '').length;
+        return {
+          ruc: largo('txtRuc'),
+          usuario: largo('txtUsuario'),
+          clave: largo('txtContrasena'),
+          tipoLogueo: (window as any).tipoLogueo ?? null,
+        };
+      })
+      .catch(() => null);
+
+    if (!estado) {
+      diagnostico.push('AVISO — no se pudo releer el formulario antes de enviarlo.');
+      return;
+    }
+
+    const problemas: string[] = [];
+    if (!estado.ruc) problemas.push('el RUC quedó vacío');
+    else if (estado.ruc !== 11) problemas.push(`el RUC tiene ${estado.ruc} dígitos y SUNAT exige 11`);
+    if (!estado.usuario) problemas.push('el usuario quedó vacío');
+    else if (estado.usuario < 8) problemas.push(`el usuario tiene ${estado.usuario} caracteres y SUNAT exige 8`);
+    if (!estado.clave) problemas.push('la clave quedó vacía');
+    else if (estado.clave < 6) problemas.push(`la clave tiene ${estado.clave} caracteres y SUNAT exige 6`);
+    if (estado.tipoLogueo !== 2) problemas.push(`la pestaña volvió a tipoLogueo=${estado.tipoLogueo}`);
+
+    if (problemas.length) {
+      throw new Error(
+        `El formulario no quedó listo para enviar: ${problemas.join('; ')}. No se envía, ` +
+        'para no gastar un intento contra el WAF de SUNAT.',
+      );
+    }
+
+    diagnostico.push(
+      `OK — formulario completo (RUC ${estado.ruc} díg., usuario ${estado.usuario} car., ` +
+      `clave ${estado.clave} car.)`,
+    );
+  }
+
+  /**
    * Espera a que termine TODA la cadena de redirects del login, que tiene 3 saltos:
    *
    *   1. api-seguridad.sunat.gob.pe/?code=<JWT>            ← ya autenticado
@@ -503,11 +679,35 @@ export class SunatTregistroScrapingClient {
     const esTransito = (href: string) =>
       href.includes(s.HOST_LOGIN) || /Autentica[A-Za-z]*\.htm/i.test(href);
 
+    // `/oauth2/error` vive en el MISMO host que el login, así que `esTransito` la daba
+    // por "todavía redirigiendo" y se esperaban 60s a que se moviera una pantalla que
+    // ya había terminado. Es un destino, no un tránsito: se corta apenas aparece.
+    const esError = (href: string) => /\/oauth2\/error/i.test(href);
+
     await page
-      .waitForURL((url) => !esTransito(url.href), { timeout: 60_000 })
+      .waitForURL((url) => !esTransito(url.href) || esError(url.href), { timeout: 60_000 })
       .catch(() => {});
     await page.waitForLoadState('domcontentloaded', { timeout: 20_000 }).catch(() => {});
-    await page.waitForTimeout(2500);
+    // La pantalla de error de SUNAT cierra su propia ventana ("Cierre la ventana y
+    // vuelva a ingresar"). Este era el ÚNICO await del bloque sin `.catch()`, y por eso
+    // el fallo del 04/09/2026 llegó como "page.waitForTimeout: Target page, context or
+    // browser has been closed" — un error de Playwright que no explica nada, tapando el
+    // motivo que SUNAT había dejado escrito en pantalla.
+    await page.waitForTimeout(2500).catch(() => {});
+
+    if (page.isClosed()) {
+      diagnostico.push(
+        'FALLA — SUNAT cerró la ventana del login. Eso es lo que hace su pantalla de error ' +
+        '("Cierre la ventana y vuelva a ingresar"), así que el login fue rechazado.',
+      );
+      throw new Error('SUNAT rechazó el login y cerró la ventana. Revisa el diagnóstico.');
+    }
+
+    if (esError(page.url())) {
+      diagnostico.push(`FALLA — SUNAT rechazó el login en ${this.urlCorta(page.url(), true)}`);
+      await this.volcarTextoDePagina(page, diagnostico);
+      throw new Error('SUNAT rechazó el login. El texto exacto de su pantalla está en el diagnóstico.');
+    }
 
     if (!esTransito(page.url())) return;
 
@@ -558,11 +758,22 @@ export class SunatTregistroScrapingClient {
    * un solo renglón del diagnóstico tapaba todo lo demás en pantalla — y además ese
    * token es una credencial de sesión, no conviene dejarlo escrito en la UI.
    */
-  private urlCorta(url: string): string {
+  private urlCorta(url: string, conValores = false): string {
     try {
       const u = new URL(url);
       const params = [...u.searchParams.keys()];
-      return params.length ? `${u.origin}${u.pathname}?${params.join('&')}=…` : `${u.origin}${u.pathname}`;
+      if (!params.length) return `${u.origin}${u.pathname}`;
+
+      // En `/oauth2/error` el motivo del rechazo viaja justo en los valores, y borrarlos
+      // dejaba el diagnóstico sin el único dato útil. `state` y `code` siguen fuera:
+      // el primero es enorme y el segundo es un JWT de sesión.
+      if (conValores) {
+        const visibles = params
+          .filter((k) => !/^(state|code)$/i.test(k))
+          .map((k) => `${k}=${(u.searchParams.get(k) ?? '').slice(0, 120)}`);
+        return `${u.origin}${u.pathname}?${visibles.join('&')}`;
+      }
+      return `${u.origin}${u.pathname}?${params.join('&')}=…`;
     } catch {
       return url.slice(0, 120);
     }

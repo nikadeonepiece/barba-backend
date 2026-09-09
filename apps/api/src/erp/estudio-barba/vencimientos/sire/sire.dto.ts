@@ -12,3 +12,13 @@ export class GenerarDescargaSireDto {
   @Length(6, 6)
   periodo!: string;
 }
+
+export class SincronizarItemsSireDto {
+  @IsInt()
+  @IsPositive()
+  id_empresa!: number;
+
+  @IsString()
+  @Length(6, 6)
+  periodo!: string;
+}
