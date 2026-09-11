@@ -291,7 +291,23 @@ export class EmpresasService {
    * rol caigan dentro de esta lista, así que uno que falte deja al rol CLIENTE fuera
    * del selector y bloquea la creación de cuentas de portal.
    */
-  private static readonly MODULOS_PORTAL = ['PLANILLAS_CLIENTE', 'CAJAS_CLIENTE', 'SIRE_CLIENTE'];
+  /**
+   * Los módulos cuyas pantallas son SEGURAS para una cuenta de portal: las que acotan
+   * sus consultas a la empresa del token y nunca muestran filas de otra.
+   *
+   * `CENTROS_COSTO` y `REQUERIMIENTOS` entraron acá recién cuando sus services pasaron
+   * a resolver la empresa con `empresaEfectiva()` (ver `clientes-planillas/scope-empresa.ts`).
+   * Antes de eso tenían selector de empresa y veían las 171, así que darle esas acciones
+   * al rol CLIENTE abría el listado entero del estudio.
+   *
+   * ⚠️ Agregar un módulo a esta lista es decir "sus pantallas filtran por empresa". Si
+   * se agrega uno que no lo hace, el aislamiento del portal se cae en silencio: nadie
+   * ve un error, simplemente el cliente empieza a ver datos de otras empresas.
+   * `APROBACION_REQUERIMIENTOS` queda afuera a propósito — aprobar es del estudio.
+   */
+  private static readonly MODULOS_PORTAL = [
+    'PLANILLAS_CLIENTE', 'CAJAS_CLIENTE', 'SIRE_CLIENTE', 'CENTROS_COSTO', 'REQUERIMIENTOS',
+  ];
 
   /**
    * Roles asignables a una cuenta de portal: los que tienen permisos DENTRO de los

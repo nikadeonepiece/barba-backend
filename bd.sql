@@ -4415,6 +4415,9 @@ CREATE TABLE `tesoreria_movimiento` (
   `id_cuenta` INT NOT NULL,
   `id_tercero` INT NULL,
   `id_medio_pago` INT NULL,
+  -- Contra qué se imputa el movimiento (sección 12). Es la dimensión de análisis:
+  -- sin ella el libro dice cuánto entró y salió, pero no en qué.
+  `id_centro_costo_concepto` INT NULL,
   `tipo` ENUM('INGRESO','EGRESO') NOT NULL,
   `fecha` DATE NOT NULL,
   `monto` DECIMAL(14,2) NOT NULL,
@@ -4431,9 +4434,17 @@ CREATE TABLE `tesoreria_movimiento` (
   `ruta_comprobante` VARCHAR(500) NULL,
   `tabla_origen` VARCHAR(50) NULL,
   `id_registro_origen` INT NULL,
+  -- La otra pata de una transferencia entre cuentas propias: son DOS movimientos
+  -- (egreso en origen, ingreso en destino) que se apuntan mutuamente. No alcanza con
+  -- una fila y dos cuentas — cada cuenta necesita la suya para que su estado de
+  -- cuenta cierre.
+  `id_movimiento_relacionado` INT NULL,
   -- ANULADO en vez de borrar: un movimiento anulado tiene que seguir visible con su
   -- motivo, porque el saldo de ese día ya se reportó con él adentro.
   `estado` ENUM('REGISTRADO','ANULADO') NOT NULL DEFAULT 'REGISTRADO',
+  -- Ciclo de CONCILIACIÓN, independiente de `estado`: un movimiento puede estar vivo
+  -- y todavía no haberse cruzado contra el extracto del banco.
+  `estado_flujo` ENUM('POR_REVISAR','PENDIENTE','CONCILIADO') NOT NULL DEFAULT 'PENDIENTE',
   `motivo_anulacion` VARCHAR(255) NULL,
   `id_usuario_anula` INT NULL,
   `estado_registro` ENUM('ACTIVO','ELIMINADO') NOT NULL DEFAULT 'ACTIVO',
@@ -4443,9 +4454,15 @@ CREATE TABLE `tesoreria_movimiento` (
   KEY `idx_mov_cuenta` (`id_cuenta`, `fecha`),
   KEY `idx_mov_tercero` (`id_tercero`),
   KEY `idx_mov_origen` (`tabla_origen`, `id_registro_origen`),
+  KEY `idx_mov_estado_flujo` (`id_empresa`, `estado_flujo`),
+  KEY `idx_mov_relacionado` (`id_movimiento_relacionado`),
   CONSTRAINT `fk_mov_empresa` FOREIGN KEY (`id_empresa`) REFERENCES `empresa` (`id_empresa`),
   CONSTRAINT `fk_mov_cuenta` FOREIGN KEY (`id_cuenta`) REFERENCES `tesoreria_cuenta` (`id_cuenta`),
-  CONSTRAINT `fk_mov_tercero` FOREIGN KEY (`id_tercero`) REFERENCES `tesoreria_tercero` (`id_tercero`)
+  CONSTRAINT `fk_mov_tercero` FOREIGN KEY (`id_tercero`) REFERENCES `tesoreria_tercero` (`id_tercero`),
+  -- Apunta a una tabla que se crea MÁS ABAJO (sección 12). Se puede declarar acá
+  -- porque el archivo entero corre con `FOREIGN_KEY_CHECKS = 0` (línea 90) y la
+  -- restricción queda válida en cuanto esa tabla existe.
+  CONSTRAINT `fk_mov_centro_costo` FOREIGN KEY (`id_centro_costo_concepto`) REFERENCES `centro_costo_concepto` (`id_centro_costo_concepto`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ------------------------------------------------------------------------------
@@ -5423,6 +5440,333 @@ INSERT INTO `sis_permiso` (`id_rol`, `id_accion`, `estado_registro`)
 SELECT (SELECT id_rol FROM sis_rol WHERE nombre = 'CLIENTE'), id_accion, 'ACTIVO'
 FROM sis_accion
 WHERE id_modulo = @id_modulo_sire_cliente
+ON DUPLICATE KEY UPDATE `estado_registro` = 'ACTIVO';
+
+-- ==============================================================================
+-- 12. MÓDULO CENTROS DE COSTO — categorías, subcategorías y conceptos por empresa
+-- ==============================================================================
+-- Portado del módulo `administracion/centros-costo-config` de Transportes Montero.
+-- Es un árbol de TRES niveles, siempre colgado de una empresa cliente:
+--
+--     EMPRESA → CATEGORÍA → SUBCATEGORÍA → CONCEPTO
+--
+-- Cada empresa arma el suyo: "COSTOS DIRECTOS / REMUNERACIONES / SUELDO BÁSICO" no
+-- significa lo mismo en una constructora que en un estudio contable, y un catálogo
+-- único obligaría a todas a usar el mismo plan de gastos.
+--
+-- Los tres niveles son tablas separadas y no una sola tabla con `id_padre`: los
+-- niveles no son intercambiables (un concepto nunca cuelga de una categoría) y el
+-- árbol no crece más allá de tres. Con `id_padre` esa regla habría que verificarla en
+-- el service en cada INSERT, y nada impediría un cuarto nivel por descuido.
+--
+-- Todavía NO hay una tabla transaccional que impute contra estos conceptos: por ahora
+-- el módulo es el catálogo. Cuando exista, el `removeConcepto()` del service tiene que
+-- sumar la verificación de dependencias que ya hacen categoría y subcategoría.
+
+-- ------------------------------------------------------------------------------
+-- Nivel 1 — CATEGORÍA (cuelga de la empresa)
+-- ------------------------------------------------------------------------------
+CREATE TABLE `centro_costo_categoria` (
+  `id_centro_costo_categoria` INT AUTO_INCREMENT PRIMARY KEY,
+  `id_empresa` INT NOT NULL,
+  `nombre` VARCHAR(150) NOT NULL COMMENT 'Se guarda en MAYÚSCULAS (el service hace trim + toUpperCase): así "Costos Directos" y "COSTOS DIRECTOS" chocan contra el UNIQUE en vez de convivir',
+  `estado_registro` ENUM('ACTIVO','ELIMINADO') NOT NULL DEFAULT 'ACTIVO',
+  `id_usuario_crea` INT NULL,
+  `id_usuario_mod` INT NULL,
+  -- Dos categorías con el mismo nombre en la misma empresa son indistinguibles en el
+  -- desplegable de subcategorías. El nombre de una categoría ELIMINADA sigue ocupado,
+  -- igual que en `uq_caja_empresa_nombre` de la sección 10.
+  UNIQUE KEY `uq_cc_categoria_empresa_nombre` (`id_empresa`, `nombre`),
+  KEY `idx_cc_categoria_empresa` (`id_empresa`, `estado_registro`),
+  CONSTRAINT `fk_cc_categoria_empresa` FOREIGN KEY (`id_empresa`) REFERENCES `empresa` (`id_empresa`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='MÓDULO: CENTROS DE COSTO — nivel 1, categoría por empresa';
+
+-- ------------------------------------------------------------------------------
+-- Nivel 2 — SUBCATEGORÍA (cuelga de la categoría)
+-- ------------------------------------------------------------------------------
+-- No repite `id_empresa`: la empresa se llega por la categoría, y duplicarla abriría la
+-- puerta a que las dos columnas se contradigan (subcategoría de la empresa A colgada de
+-- una categoría de la B). Las consultas la traen con un JOIN.
+CREATE TABLE `centro_costo_subcategoria` (
+  `id_centro_costo_subcategoria` INT AUTO_INCREMENT PRIMARY KEY,
+  `id_centro_costo_categoria` INT NOT NULL,
+  `nombre` VARCHAR(150) NOT NULL COMMENT 'En MAYÚSCULAS, igual que la categoría',
+  `estado_registro` ENUM('ACTIVO','ELIMINADO') NOT NULL DEFAULT 'ACTIVO',
+  `id_usuario_crea` INT NULL,
+  `id_usuario_mod` INT NULL,
+  UNIQUE KEY `uq_cc_subcategoria_cat_nombre` (`id_centro_costo_categoria`, `nombre`),
+  KEY `idx_cc_subcategoria_categoria` (`id_centro_costo_categoria`, `estado_registro`),
+  CONSTRAINT `fk_cc_subcategoria_categoria` FOREIGN KEY (`id_centro_costo_categoria`) REFERENCES `centro_costo_categoria` (`id_centro_costo_categoria`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='MÓDULO: CENTROS DE COSTO — nivel 2, subcategoría';
+
+-- ------------------------------------------------------------------------------
+-- Nivel 3 — CONCEPTO (la hoja del árbol: contra esto se imputa)
+-- ------------------------------------------------------------------------------
+CREATE TABLE `centro_costo_concepto` (
+  `id_centro_costo_concepto` INT AUTO_INCREMENT PRIMARY KEY,
+  `id_centro_costo_subcategoria` INT NOT NULL,
+  `nombre` VARCHAR(150) NOT NULL COMMENT 'En MAYÚSCULAS, igual que los niveles de arriba',
+  `estado_registro` ENUM('ACTIVO','ELIMINADO') NOT NULL DEFAULT 'ACTIVO',
+  `id_usuario_crea` INT NULL,
+  `id_usuario_mod` INT NULL,
+  UNIQUE KEY `uq_cc_concepto_subcat_nombre` (`id_centro_costo_subcategoria`, `nombre`),
+  KEY `idx_cc_concepto_subcategoria` (`id_centro_costo_subcategoria`, `estado_registro`),
+  CONSTRAINT `fk_cc_concepto_subcategoria` FOREIGN KEY (`id_centro_costo_subcategoria`) REFERENCES `centro_costo_subcategoria` (`id_centro_costo_subcategoria`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='MÓDULO: CENTROS DE COSTO — nivel 3, concepto imputable';
+
+-- ------------------------------------------------------------------------------
+-- Permisos — módulo PROPIO, no PLANILLAS_CLIENTE
+-- ------------------------------------------------------------------------------
+-- La pantalla vive en la carpeta del portal (`erp/clientes-planillas/`) pero NO es del
+-- portal: tiene selector de empresa y trabaja sobre TODAS las empresas del estudio.
+--
+-- Por eso las acciones no pueden ir en `PLANILLAS_CLIENTE`: ese bloque termina con un
+-- `INSERT ... SELECT ... WHERE id_modulo = @id_modulo_planillas_cliente` que le da al
+-- rol CLIENTE todo lo del módulo. Colgadas ahí, cada cuenta de empresa terminaría
+-- viendo y editando los centros de costo de las otras 170.
+--
+-- Con módulo propio el rol CLIENTE no las recibe nunca, y quien quiera dárselas a
+-- alguien tiene que marcarlas a mano en la pantalla de roles.
+INSERT INTO `sis_modulo` (`nombre`, `etiqueta`, `estado_registro`) VALUES
+('CENTROS_COSTO', 'Centros de Costo', 'ACTIVO')
+ON DUPLICATE KEY UPDATE `etiqueta` = VALUES(`etiqueta`), `estado_registro` = 'ACTIVO';
+
+SET @id_modulo_centros_costo = (SELECT id_modulo FROM sis_modulo WHERE nombre = 'CENTROS_COSTO');
+
+-- Una sola tanda de claves para los tres niveles: las tres pestañas son la misma
+-- pantalla, y "puede crear categorías pero no conceptos" no es una separación que el
+-- estudio vaya a usar. Si algún día hace falta, se parten acá.
+INSERT INTO `sis_accion` (`id_modulo`, `codigo_accion`, `descripcion`, `tipo_operacion`, `estado_registro`) VALUES
+(@id_modulo_centros_costo, 'ver_centro_costo_config',           'Ver el árbol de centros de costo de las empresas',   'READ',    'ACTIVO'),
+(@id_modulo_centros_costo, 'crear_centro_costo_config',         'Crear categorías, subcategorías y conceptos',        'CREATE',  'ACTIVO'),
+(@id_modulo_centros_costo, 'editar_centro_costo_config',        'Editar categorías, subcategorías y conceptos',       'UPDATE',  'ACTIVO'),
+(@id_modulo_centros_costo, 'eliminar_centro_costo_config',      'Dar de baja categorías, subcategorías y conceptos',  'DELETE',  'ACTIVO'),
+(@id_modulo_centros_costo, 'exportar_excel_centro_costo_config','Exportar el listado a Excel',                        'SPECIAL', 'ACTIVO'),
+(@id_modulo_centros_costo, 'exportar_pdf_centro_costo_config',  'Exportar el listado a PDF',                          'SPECIAL', 'ACTIVO')
+ON DUPLICATE KEY UPDATE `descripcion` = VALUES(`descripcion`);
+
+INSERT INTO `sis_permiso` (`id_rol`, `id_accion`, `estado_registro`)
+SELECT 1, id_accion, 'ACTIVO' FROM sis_accion WHERE id_modulo = @id_modulo_centros_costo
+ON DUPLICATE KEY UPDATE `estado_registro` = 'ACTIVO';
+
+-- ==============================================================================
+-- 13. MÓDULO REQUERIMIENTOS — pedido de compra y su aprobación
+-- ==============================================================================
+-- Portado de `taller/requerimientos` + `finanzas/aprobacion-requerimientos` de
+-- Transportes Montero. Son DOS pantallas sobre las MISMAS dos tablas:
+--
+--   1. REQUERIMIENTOS  — quien necesita algo lo registra con sus ítems y su costo.
+--   2. APROBACIÓN      — finanzas lo revisa, ajusta montos si hace falta y decide.
+--      Al aprobar se genera la ORDEN DE PAGO en tesorería; a partir de ahí el gasto
+--      vive en `tesoreria_orden_pago` y se paga con el circuito que ya existe.
+--
+-- Lo que NO se portó de Montero, porque no tiene contraparte en este ERP: el destino
+-- de cada línea (flota / almacén / campo / zona), el `tipo_operacion` por rubro y el
+-- "pago directo" contra caja chica. El resto está completo, incluido el cálculo de
+-- línea con IGV y la separación soles / dólares.
+--
+-- ── Por qué la cabecera lleva `id_empresa` ──
+--
+-- En Montero la empresa era siempre la misma y el service la forzaba. Acá el estudio
+-- lleva ~171 empresas y TODO lo que el requerimiento referencia es por empresa: el
+-- proveedor (`tesoreria_tercero.id_empresa`), el trabajador (`planilla_trabajador`),
+-- el centro de costo (sección 12) y la orden de pago que se genera al aprobar. Sin la
+-- columna, un requerimiento podría mezclar el proveedor de una empresa con el centro
+-- de costo de otra y recién se vería en el estado de cuenta.
+
+-- ------------------------------------------------------------------------------
+-- Cabecera
+-- ------------------------------------------------------------------------------
+CREATE TABLE `requerimiento` (
+  `id_requerimiento` INT AUTO_INCREMENT PRIMARY KEY,
+  `id_empresa` INT NOT NULL COMMENT 'Empresa que paga. Acota proveedor, personal y centro de costo, y es la empresa de la orden de pago',
+
+  `fecha_registro` DATE NOT NULL,
+  `fecha_vencimiento` DATE NULL COMMENT 'Cuándo hay que pagarlo. Es la fecha_vencimiento de la orden de pago que se genera al aprobar',
+
+  `id_tercero_proveedor` INT NULL
+    COMMENT 'A quién se le compra. NULL mientras se cotiza, pero APROBAR lo exige: tesoreria_orden_pago.id_tercero es NOT NULL',
+  `id_trabajador_solicitante` INT NULL COMMENT 'Quién pidió la compra',
+  `id_trabajador_encargado` INT NULL COMMENT 'Quién la gestiona',
+  `id_medio_pago` INT NULL COMMENT 'Con qué se piensa pagar. Informativo: el pago real lo registra tesorería',
+
+  `tipo_comprobante` ENUM('FACTURA','BOLETA','RECIBO','TICKET','PROFORMA','NOTA_PEDIDO','RECIBO_INTERNO','OTRO','NINGUNO')
+    NOT NULL DEFAULT 'NINGUNO',
+  `nro_comprobante` VARCHAR(100) NULL,
+  -- Ruta RELATIVA dentro de `storage-privado/requerimiento-comprobantes`, NO de
+  -- `uploads/`: una proforma trae RUC, razón social y montos de un proveedor de un
+  -- cliente del estudio. Mismo criterio que el comprobante de caja chica (sección 10).
+  `ruta_comprobante` VARCHAR(500) NULL,
+  `nombre_comprobante` VARCHAR(255) NULL COMMENT 'Nombre original del archivo: la descarga no debe salir con el nombre aleatorio del disco',
+
+  `prioridad` ENUM('BAJO','MEDIO','ALTO','URGENTE') NOT NULL DEFAULT 'MEDIO',
+  `observacion` VARCHAR(1000) NULL COMMENT 'Por qué salió el gasto: unidad parada, compra de emergencia. Viaja a la descripción de la orden de pago',
+
+  -- Dos totales y no uno con `moneda`: un mismo requerimiento puede tener ítems en
+  -- soles y en dólares (repuesto importado + mano de obra local). Sumarlos daría un
+  -- número que no existe, y convertirlos exigiría fijar un tipo de cambio que a esta
+  -- altura todavía no se conoce. Al aprobar se generan DOS órdenes de pago.
+  `total` DECIMAL(14,2) NOT NULL DEFAULT 0.00 COMMENT 'Suma de las líneas en soles, IGV incluido cuando la línea lo lleva',
+  `total_dolares` DECIMAL(14,2) NOT NULL DEFAULT 0.00 COMMENT 'Suma de las líneas en dólares',
+
+  `estado_aprobacion` ENUM('PENDIENTE','APROBADO','RECHAZADO') NOT NULL DEFAULT 'PENDIENTE',
+  `id_usuario_aprueba` INT NULL,
+  `fecha_aprobacion` DATETIME NULL,
+  `motivo_rechazo` VARCHAR(500) NULL,
+
+  -- Órdenes generadas al aprobar. La "principal" es la de soles cuando hay soles; la
+  -- segunda solo se llena si el requerimiento mezcla monedas.
+  `id_orden_pago` INT NULL,
+  `id_orden_pago_dolares` INT NULL,
+
+  `estado_registro` ENUM('ACTIVO','ELIMINADO') NOT NULL DEFAULT 'ACTIVO',
+  `id_usuario_crea` INT NULL,
+  `id_usuario_mod` INT NULL,
+
+  KEY `idx_req_empresa_estado` (`id_empresa`, `estado_aprobacion`, `estado_registro`),
+  KEY `idx_req_fecha` (`fecha_registro`),
+  KEY `idx_req_proveedor` (`id_tercero_proveedor`),
+  CONSTRAINT `fk_req_empresa` FOREIGN KEY (`id_empresa`) REFERENCES `empresa` (`id_empresa`),
+  CONSTRAINT `fk_req_proveedor` FOREIGN KEY (`id_tercero_proveedor`) REFERENCES `tesoreria_tercero` (`id_tercero`),
+  CONSTRAINT `fk_req_solicitante` FOREIGN KEY (`id_trabajador_solicitante`) REFERENCES `planilla_trabajador` (`id_trabajador`),
+  CONSTRAINT `fk_req_encargado` FOREIGN KEY (`id_trabajador_encargado`) REFERENCES `planilla_trabajador` (`id_trabajador`),
+  CONSTRAINT `fk_req_medio_pago` FOREIGN KEY (`id_medio_pago`) REFERENCES `tesoreria_medio_pago` (`id_medio_pago`),
+  CONSTRAINT `fk_req_orden_pago` FOREIGN KEY (`id_orden_pago`) REFERENCES `tesoreria_orden_pago` (`id_orden_pago`),
+  CONSTRAINT `fk_req_orden_pago_usd` FOREIGN KEY (`id_orden_pago_dolares`) REFERENCES `tesoreria_orden_pago` (`id_orden_pago`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='MÓDULO: REQUERIMIENTOS — cabecera del pedido de compra';
+
+-- ------------------------------------------------------------------------------
+-- Detalle — una línea por ítem pedido
+-- ------------------------------------------------------------------------------
+-- `precio_unitario` va con SEIS decimales, no con dos, y no es un descuido: cuando el
+-- usuario digita el TOTAL de la línea (`modo_ingreso = 'TOTAL'`), el unitario se
+-- DESPEJA de ese total. Con dos decimales el redondeo del unitario hace que
+-- `cantidad × unitario` ya no devuelva el total que el proveedor cobró, y la línea
+-- muestra un centavo de diferencia contra la factura.
+CREATE TABLE `requerimiento_detalle` (
+  `id_detalle` INT AUTO_INCREMENT PRIMARY KEY,
+  `id_requerimiento` INT NOT NULL,
+  `id_centro_costo_concepto` INT NULL COMMENT 'Contra qué centro de costo se imputa (sección 12). Tiene que ser de la MISMA empresa del requerimiento',
+
+  `detalle` VARCHAR(500) NOT NULL COMMENT 'Qué se está pidiendo, en palabras del solicitante',
+  `cantidad` DECIMAL(14,2) NOT NULL DEFAULT 1.00,
+  `precio_unitario` DECIMAL(14,6) NOT NULL DEFAULT 0.000000 COMMENT 'SIN IGV. Si modo_ingreso = TOTAL, se deriva del total digitado',
+  -- Cómo digitó la línea el usuario. Se guarda porque decide cuál de los dos números
+  -- es el dato y cuál el derivado: al reabrir para editar, el que se muestra para
+  -- corregir tiene que ser el que la persona escribió.
+  `modo_ingreso` ENUM('UNITARIO','TOTAL') NOT NULL DEFAULT 'UNITARIO',
+  `con_igv` TINYINT(1) NOT NULL DEFAULT 0 COMMENT '1 = el subtotal de la línea incluye IGV (18%)',
+  `pago_dolares` TINYINT(1) NOT NULL DEFAULT 0 COMMENT '1 = la línea es en dólares y suma a total_dolares',
+  `subtotal` DECIMAL(14,2) NOT NULL DEFAULT 0.00 COMMENT 'Lo que cuesta la línea, IGV incluido si con_igv = 1',
+
+  `estado_registro` ENUM('ACTIVO','ELIMINADO') NOT NULL DEFAULT 'ACTIVO',
+  `id_usuario_crea` INT NULL,
+  `id_usuario_mod` INT NULL,
+
+  KEY `idx_req_det_requerimiento` (`id_requerimiento`, `estado_registro`),
+  KEY `idx_req_det_concepto` (`id_centro_costo_concepto`),
+  CONSTRAINT `fk_req_det_requerimiento` FOREIGN KEY (`id_requerimiento`) REFERENCES `requerimiento` (`id_requerimiento`),
+  CONSTRAINT `fk_req_det_concepto` FOREIGN KEY (`id_centro_costo_concepto`) REFERENCES `centro_costo_concepto` (`id_centro_costo_concepto`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='MÓDULO: REQUERIMIENTOS — ítems del pedido';
+
+-- ------------------------------------------------------------------------------
+-- Permisos — DOS módulos, uno por pantalla
+-- ------------------------------------------------------------------------------
+-- Separados a propósito, igual que en Montero (taller registra, finanzas aprueba).
+-- Con un solo módulo, dar de alta a quien registra los pedidos lo dejaría a un
+-- checkbox de poder aprobarlos él mismo, que es exactamente el control que esta
+-- pantalla existe para imponer.
+INSERT INTO `sis_modulo` (`nombre`, `etiqueta`, `estado_registro`) VALUES
+('REQUERIMIENTOS', 'Requerimientos', 'ACTIVO'),
+('APROBACION_REQUERIMIENTOS', 'Aprobación de Requerimientos', 'ACTIVO')
+ON DUPLICATE KEY UPDATE `etiqueta` = VALUES(`etiqueta`), `estado_registro` = 'ACTIVO';
+
+SET @id_modulo_requerimientos = (SELECT id_modulo FROM sis_modulo WHERE nombre = 'REQUERIMIENTOS');
+SET @id_modulo_aprob_req = (SELECT id_modulo FROM sis_modulo WHERE nombre = 'APROBACION_REQUERIMIENTOS');
+
+INSERT INTO `sis_accion` (`id_modulo`, `codigo_accion`, `descripcion`, `tipo_operacion`, `estado_registro`) VALUES
+(@id_modulo_requerimientos, 'ver_requerimiento',            'Ver los requerimientos de compra',                    'READ',    'ACTIVO'),
+(@id_modulo_requerimientos, 'crear_requerimiento',          'Registrar un requerimiento con sus ítems',            'CREATE',  'ACTIVO'),
+(@id_modulo_requerimientos, 'editar_requerimiento',         'Editar un requerimiento que sigue PENDIENTE',         'UPDATE',  'ACTIVO'),
+(@id_modulo_requerimientos, 'eliminar_requerimiento',       'Dar de baja un requerimiento PENDIENTE o RECHAZADO',  'DELETE',  'ACTIVO'),
+(@id_modulo_requerimientos, 'exportar_excel_requerimiento', 'Exportar el listado de requerimientos a Excel',       'SPECIAL', 'ACTIVO'),
+(@id_modulo_requerimientos, 'exportar_pdf_requerimiento',   'Exportar el listado de requerimientos a PDF',         'SPECIAL', 'ACTIVO'),
+(@id_modulo_aprob_req, 'ver_aprobacion_requerimiento',      'Ver la bandeja de requerimientos por aprobar',        'READ',    'ACTIVO'),
+(@id_modulo_aprob_req, 'aprobar_requerimiento',             'Aprobar un requerimiento y generar su orden de pago', 'SPECIAL', 'ACTIVO'),
+(@id_modulo_aprob_req, 'rechazar_requerimiento',            'Rechazar un requerimiento indicando el motivo',       'SPECIAL', 'ACTIVO'),
+(@id_modulo_aprob_req, 'revertir_requerimiento',            'Revertir una aprobación cuya orden aún no tiene pagos','SPECIAL', 'ACTIVO')
+ON DUPLICATE KEY UPDATE `descripcion` = VALUES(`descripcion`);
+
+INSERT INTO `sis_permiso` (`id_rol`, `id_accion`, `estado_registro`)
+SELECT 1, id_accion, 'ACTIVO' FROM sis_accion
+WHERE id_modulo IN (@id_modulo_requerimientos, @id_modulo_aprob_req)
+ON DUPLICATE KEY UPDATE `estado_registro` = 'ACTIVO';
+
+-- ==============================================================================
+-- 14. TESORERÍA — cuentas bancarias y movimientos (pantallas sobre tablas ya creadas)
+-- ==============================================================================
+-- Portado de `administracion/cuentas-banco` y `finanzas/movimientos` de Transportes
+-- Montero. Las tablas YA EXISTEN desde la sección 7 (`tesoreria_cuenta`,
+-- `tesoreria_movimiento`): hasta hoy eran esquema sin pantalla. Este bloque solo
+-- agrega las tres columnas que el módulo de Montero necesita y los permisos que
+-- faltaban.
+--
+-- Lo que NO se portó, porque no existe en este ERP: el filtro por RUBRO (acá las
+-- empresas son clientes del estudio, no un grupo con rubros) y el PLAN CONTABLE
+-- (no hay tabla de plan contable). El `tipo_operacion` de Montero se reemplaza por
+-- el centro de costo de la sección 12, que es la dimensión equivalente acá.
+
+-- ------------------------------------------------------------------------------
+-- Columnas nuevas en `tesoreria_movimiento`
+-- ------------------------------------------------------------------------------
+-- ⚠️ Sobre una base NUEVA no hace falta correr estos ALTER: las tres columnas ya
+-- están en el `CREATE TABLE` de la sección 7. Van acá para la base que YA está
+-- cargada. Si se corren dos veces dan "Duplicate column name", que es inofensivo.
+--
+--   ALTER TABLE `tesoreria_movimiento`
+--     ADD COLUMN `estado_flujo` ENUM('POR_REVISAR','PENDIENTE','CONCILIADO') NOT NULL DEFAULT 'PENDIENTE' AFTER `estado`,
+--     ADD COLUMN `id_movimiento_relacionado` INT NULL AFTER `id_registro_origen`,
+--     ADD COLUMN `id_centro_costo_concepto` INT NULL AFTER `id_medio_pago`,
+--     ADD KEY `idx_mov_estado_flujo` (`id_empresa`, `estado_flujo`),
+--     ADD KEY `idx_mov_relacionado` (`id_movimiento_relacionado`),
+--     ADD CONSTRAINT `fk_mov_centro_costo` FOREIGN KEY (`id_centro_costo_concepto`)
+--         REFERENCES `centro_costo_concepto` (`id_centro_costo_concepto`);
+--
+-- Por qué cada una:
+--
+-- `estado_flujo` — es el ciclo de CONCILIACIÓN, y no se pisa con `estado`, que dice
+--   si el movimiento existe o fue anulado. Un movimiento puede estar REGISTRADO y aun
+--   así no haber sido cuadrado contra el extracto del banco. POR_REVISAR es para lo
+--   que entra sin que una persona lo haya mirado todavía; PENDIENTE es el default de
+--   lo que se carga a mano; CONCILIADO es el que ya se cruzó con el banco.
+--
+-- `id_movimiento_relacionado` — una transferencia entre cuentas propias son DOS
+--   movimientos (egreso en origen, ingreso en destino) que apuntan uno al otro. No es
+--   un movimiento con dos cuentas: la plata sale de un saldo y entra en otro, y cada
+--   cuenta necesita su propia fila para que su estado de cuenta cierre.
+--
+-- `id_centro_costo_concepto` — contra qué se imputa el movimiento. Reemplaza al
+--   `id_tipo_operacion` de Montero y reusa el árbol de la sección 12, así el mismo
+--   catálogo sirve para requerimientos y para la plata que efectivamente se movió.
+
+-- ------------------------------------------------------------------------------
+-- Permisos que faltaban en el módulo TESORERIA
+-- ------------------------------------------------------------------------------
+-- El módulo y la mayoría de las claves ya existen desde la sección 7 (`ver_cuentas`,
+-- `crear_cuenta`, `ver_movimientos`, `crear_movimiento`, `anular_movimiento`…). Solo
+-- se agregan las tres acciones que las pantallas nuevas necesitan y que no estaban.
+SET @id_modulo_tesoreria = (SELECT id_modulo FROM sis_modulo WHERE nombre = 'TESORERIA');
+
+INSERT INTO `sis_accion` (`id_modulo`, `codigo_accion`, `descripcion`, `tipo_operacion`, `estado_registro`) VALUES
+(@id_modulo_tesoreria, 'editar_movimiento',     'Corregir un movimiento ya registrado',                  'UPDATE',  'ACTIVO'),
+(@id_modulo_tesoreria, 'transferir_movimiento', 'Registrar una transferencia entre cuentas propias',     'SPECIAL', 'ACTIVO'),
+(@id_modulo_tesoreria, 'conciliar_movimiento',  'Marcar un movimiento como revisado o conciliado',       'SPECIAL', 'ACTIVO')
+ON DUPLICATE KEY UPDATE `descripcion` = VALUES(`descripcion`);
+
+INSERT INTO `sis_permiso` (`id_rol`, `id_accion`, `estado_registro`)
+SELECT 1, id_accion, 'ACTIVO' FROM sis_accion
+WHERE id_modulo = @id_modulo_tesoreria
+  AND codigo_accion IN ('editar_movimiento', 'transferir_movimiento', 'conciliar_movimiento')
 ON DUPLICATE KEY UPDATE `estado_registro` = 'ACTIVO';
 
 -- ==============================================================================

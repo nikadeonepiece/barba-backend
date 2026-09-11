@@ -6,6 +6,9 @@ import { ModalidadPagoClienteModule } from './modalidad-pago/modalidad-pago.modu
 import { CajasClienteModule } from './cajas/cajas-cliente.module';
 import { TableroClienteModule } from './tablero/tablero-cliente.module';
 import { SireClienteModule } from './sire/sire-cliente.module';
+import { CentrosCostoConfigModule } from './centros-costo-config/centros-costo-config.module';
+import { RequerimientosModule } from './requerimientos/requerimientos.module';
+import { AprobacionRequerimientosModule } from './aprobacion-requerimientos/aprobacion-requerimientos.module';
 
 /**
  * Área CLIENTE — "Planillas Cliente", el portal que ve la empresa.
@@ -58,6 +61,13 @@ import { SireClienteModule } from './sire/sire-cliente.module';
     CajasClienteModule,
     TableroClienteModule,
     SireClienteModule,
+    // Vive acá por ubicación de carpeta, pero NO es del portal: tiene selector de
+    // empresa y sus permisos son del módulo CENTROS_COSTO, que el rol CLIENTE no
+    // recibe. Es la única excepción a la regla de arriba y está documentada en la
+    // cabecera de su service.
+    CentrosCostoConfigModule,
+    RequerimientosModule,
+    AprobacionRequerimientosModule,
   ],
   exports: [
     PersonalClienteModule,
@@ -67,6 +77,9 @@ import { SireClienteModule } from './sire/sire-cliente.module';
     CajasClienteModule,
     TableroClienteModule,
     SireClienteModule,
+    CentrosCostoConfigModule,
+    RequerimientosModule,
+    AprobacionRequerimientosModule,
   ],
 })
 export class ClienteModule {}
